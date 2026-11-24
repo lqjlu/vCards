@@ -18,5 +18,6 @@
     "noFallthroughCasesInSwitch": true,
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/carddav/worker.ts", "src/carddav/worker.test.ts"]
 }

@@ -4,3 +4,6 @@ public
 *.zip
 .DS_Store
 radicale
+dist
+.wrangler
+.workbuddy

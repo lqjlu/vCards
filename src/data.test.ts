@@ -76,7 +76,7 @@ test("Validation/no-duplicate-phones", async () => {
 });
 
 for (const yamlPath of yamlPaths) {
-  const segments = yamlPath.split("/");
+  const segments = yamlPath.split(/[\\/]/);
   const type = required(segments[1], `数据路径不合法: ${yamlPath}`);
   const name = required(segments[2], `数据路径不合法: ${yamlPath}`).replace(
     /\.yaml$/,

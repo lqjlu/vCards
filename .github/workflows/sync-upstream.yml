@@ -1,0 +1,72 @@
+name: Sync upstream data
+
+on:
+  schedule:
+    # 每天北京时间 06:00 (UTC 22:00)
+    - cron: "0 22 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/metowolf/vCards.git
+          git fetch upstream master
+
+      - name: Check for changes
+        id: check
+        run: |
+          # 比较上游 data/ 与本地 data/ 的差异
+          git diff --quiet HEAD upstream/master -- data/ && echo "changed=false" >> $GITHUB_OUTPUT || echo "changed=true" >> $GITHUB_OUTPUT
+
+      - name: Sync data directory
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          # 完全以 data/ 目录为准，删除本地多余文件（上游删除的）
+          rm -rf data/
+          git checkout upstream/master -- data/
+          git add -A data/
+
+          CHANGED_COUNT=$(git diff --cached --name-only | wc -l)
+          echo "同步文件数: $CHANGED_COUNT"
+          git diff --cached --name-only | head -30
+
+          git commit -m "chore: sync data from upstream ($(date -u +%Y-%m-%d))"
+          git push origin master
+
+      - name: Trigger CardDAV deployment
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run deploy-carddav.yml --ref master
+
+      - name: Summary
+        run: |
+          echo "### 上游同步结果" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.check.outputs.changed }}" = "true" ]; then
+            echo "状态: 发现上游更新，已同步 data/ 并触发部署" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "状态: 已是最新，无需同步" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "上游: metowolf/vCards@master" >> $GITHUB_STEP_SUMMARY
+          echo "检查时间: $(date -u '+%Y-%m-%d %H:%M UTC')" >> $GITHUB_STEP_SUMMARY

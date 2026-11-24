@@ -1,0 +1,24 @@
+name = "vcards-carddav"
+main = "src/carddav/worker.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# R2 存储桶：存放 catalog.json 与聚合后的地址簿 JSON
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "vcards-carddav"
+
+# 自定义域名路由（把 carddav.example.com 替换为你的域名）
+# 也可在 Cloudflare 控制台 Workers 设置中添加路由
+# [[routes]]
+# pattern = "carddav.example.com/*"
+# zone_name = "example.com"
+
+[vars]
+# Basic Auth 用户名，默认 cn
+CARDDAV_USER = "cn"
+
+# 密码请用 secret 设置，不要写在配置文件里：
+#   wrangler secret put CARDDAV_PASS
+# 若需要完全公开，可设置 ALLOW_ANONYMOUS = "true"
+# ALLOW_ANONYMOUS = "true"

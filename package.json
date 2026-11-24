@@ -10,13 +10,16 @@
   "scripts": {
     "build": "bun run src/build.ts build",
     "radicale": "bun run src/build.ts radicale",
+    "build:carddav": "bun run src/carddav/build.ts",
+    "deploy:carddav": "bun run build:carddav && wrangler deploy && bash scripts/upload-carddav.sh",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.worker.json"
   },
-  "repository": "git@github.com:metowolf/vCards.git",
+  "repository": "git@github.com:lqjlu/vCards.git",
   "author": "metowolf <i@i-meto.com>",
   "license": "MIT",
   "devDependencies": {
+    "@cloudflare/workers-types": "^4.0.0",
     "@types/bun": "^1.3.0",
     "pinyin-pro": "^3.27.0",
     "typescript": "^7.0.2",
