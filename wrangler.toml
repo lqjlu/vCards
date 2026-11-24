@@ -2,17 +2,18 @@ name = "vcards-carddav"
 main = "src/carddav/worker.ts"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
+workers_dev = true
 
 # R2 存储桶：存放 catalog.json 与聚合后的地址簿 JSON
 [[r2_buckets]]
 binding = "R2"
 bucket_name = "vcards-carddav"
 
-# 自定义域名路由（把 carddav.example.com 替换为你的域名）
-# 也可在 Cloudflare 控制台 Workers 设置中添加路由
-# [[routes]]
-# pattern = "carddav.example.com/*"
-# zone_name = "example.com"
+# 自定义域名路由
+[[routes]]
+pattern = "card.585119.xyz"
+zone_name = "585119.xyz"
+custom_domain = true
 
 [vars]
 # Basic Auth 用户名，默认 cn
