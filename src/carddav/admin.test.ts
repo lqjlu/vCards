@@ -107,6 +107,18 @@ describe("管理界面与 API", () => {
     expect(html).toContain("vCards 通讯录管理");
   });
 
+  test("生成的 HTML 脚本语法合法（防止模板转义导致白屏）", async () => {
+    const res = await call("/admin");
+    const html = await res.text();
+    const start = html.indexOf("<script>") + "<script>".length;
+    const end = html.indexOf("</script>");
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const script = html.slice(start, end);
+    // 用 Function 构造做语法校验；语法错误会抛出，合法则通过
+    expect(() => new Function(script)).not.toThrow();
+  });
+
   test("未认证访问 /admin 返回 401", async () => {
     const res = await worker.fetch(new Request("https://card.example.com/admin"), env, {} as ExecutionContext);
     expect(res.status).toBe(401);
