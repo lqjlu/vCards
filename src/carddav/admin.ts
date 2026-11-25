@@ -46,7 +46,7 @@ const findBaseContact = async (env: Env, uid: string): Promise<{ bookId: string;
 
 /** 获取合并后的联系人列表（网页主列表） */
 const listContacts = async (env: Env): Promise<Response> => {
-  const state = await loadUserState(env.DB);
+  const state = await loadUserState(env);
   const catalogObject = await env.R2.get("catalog.json");
   if (!catalogObject) return json({ error: "catalog.json 不存在" }, 500);
   const catalog = (await catalogObject.json()) as Catalog;
@@ -157,7 +157,7 @@ const saveContact = async (request: Request, env: Env): Promise<Response> => {
     );
   }
   await db.batch(batch);
-  const version = await bumpVersion(db);
+  const version = await bumpVersion(env);
   return json({ ok: true, version });
 };
 
@@ -194,7 +194,7 @@ const createContact = async (request: Request, env: Env): Promise<Response> => {
       const exists =
         catalog.books.some((b) => b.id === bookId) ||
         catalog.macosBook.id === bookId ||
-        (await loadUserState(env.DB)).customBooks.some((b) => b.id === bookId);
+        (await loadUserState(env)).customBooks.some((b) => b.id === bookId);
       if (!exists) return json({ error: "分类不存在" }, 400);
     }
   }
@@ -203,7 +203,7 @@ const createContact = async (request: Request, env: Env): Promise<Response> => {
   const existing = await db.prepare("SELECT 1 FROM extra_contacts WHERE uid = ?").bind(uid).first();
   if (existing) return json({ error: "该名称已存在" }, 409);
   const base = await findBaseContact(env, uid);
-  if (base && !stateHasTombstone(await loadUserState(env.DB), uid)) {
+  if (base && !stateHasTombstone(await loadUserState(env), uid)) {
     return json({ error: "该名称与上游联系人冲突，请换个名称" }, 409);
   }
 
@@ -216,7 +216,7 @@ const createContact = async (request: Request, env: Env): Promise<Response> => {
     )
     .bind(id, uid, bookId, vcard, etag, new Date().toISOString())
     .run();
-  const version = await bumpVersion(db);
+  const version = await bumpVersion(env);
   return json({ ok: true, version, id });
 };
 
@@ -241,13 +241,13 @@ const deleteContact = async (request: Request, env: Env): Promise<Response> => {
       .run();
   }
   await db.prepare("DELETE FROM overrides WHERE uid = ?").bind(uid).run();
-  const version = await bumpVersion(db);
+  const version = await bumpVersion(env);
   return json({ ok: true, version });
 };
 
 /** 列出所有分类（基线 + 自定义） */
 const listBooks = async (env: Env): Promise<Response> => {
-  const state = await loadUserState(env.DB);
+  const state = await loadUserState(env);
   const catalogObject = await env.R2.get("catalog.json");
   const baseBooks = catalogObject
     ? ((await catalogObject.json()) as Catalog).books.map((b) => ({ id: b.id, name: b.name }))
@@ -264,7 +264,7 @@ const restoreContact = async (request: Request, env: Env): Promise<Response> => 
   const uid = body.uid?.trim();
   if (!uid) return json({ error: "缺少 uid" }, 400);
   await env.DB.prepare("DELETE FROM tombstones WHERE uid = ?").bind(uid).run();
-  const version = await bumpVersion(env.DB);
+  const version = await bumpVersion(env);
   return json({ ok: true, version });
 };
 

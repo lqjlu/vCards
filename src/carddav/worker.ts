@@ -230,7 +230,7 @@ const getBaseCatalog = async (env: Env): Promise<Catalog> => {
  */
 const getCatalog = async (env: Env, state?: UserState): Promise<Catalog> => {
   const base = await getBaseCatalog(env);
-  const user = state ?? (await loadUserState(env.DB));
+  const user = state ?? (await loadUserState(env));
   if (user.version === 0 && user.extraContacts.length === 0 && user.tombstones.size === 0) {
     return base;
   }
@@ -289,7 +289,7 @@ const getBookData = async (
   bookId: string,
   state?: UserState,
 ): Promise<BookData | null> => {
-  const user = state ?? (await loadUserState(env.DB));
+  const user = state ?? (await loadUserState(env));
   const object = await env.R2.get(`books/${mode}/${bookId}.json`);
   const base = object ? ((await object.json()) as BookData) : null;
 
@@ -690,7 +690,7 @@ export default {
       return await handleAdminApi(request, env, url.pathname);
     }
 
-    const state = await loadUserState(env.DB);
+    const state = await loadUserState(env);
 
     try {
       switch (method) {

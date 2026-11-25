@@ -1,11 +1,14 @@
 /**
  * D1 覆盖层数据访问
  *
- * 为规避 Workers 子请求限制，所有读操作一次性把覆盖层整表读出（4 条 SQL），
- * 在内存中与 R2 基线合并。
+ * 读多写少：用户覆盖数据最终落在 D1，但 D1 免费版冷查询偶发极慢（实测 1~27 秒）。
+ * iOS 全量同步会并发拉 20 个地址簿，若每个请求都冷查 D1，累积起来必然超时。
+ * 因此把整份覆盖层状态序列化后镜像到 R2（跨 PoP 全局一致、读小对象极快），
+ * 读路径只读 R2，D1 仅作为写入源与回源兜底。
  */
 
 import { mergeVCard } from "./merge";
+import type { Env } from "./worker-types";
 
 export interface FieldOverrideRow {
   uid: string;
@@ -49,17 +52,8 @@ export const EMPTY_STATE: UserState = {
   customBooks: [],
 };
 
-/**
- * 两级缓存：模块级缓存 + Cloudflare Cache API。
- *
- * 免费版 D1 冷查询偶发极慢（实测 1~27 秒）。iOS 全量同步会并发请求
- * 20 个地址簿，若各自落到新 isolate 并冷查 D1，会累积到客户端超时。
- * 模块级缓存只在单个 isolate 内有效；Cache API 可在同一数据中心跨
- * isolate 共享，把 20 次冷查询降为 1 次。写操作后主动失效两级缓存。
- */
-let userStateCache: { state: UserState; expires: number } | null = null;
-const USER_STATE_TTL = 30_000;
-const STATE_CACHE_URL = "https://card.585119.xyz/__user-state-cache.json";
+/** 覆盖层状态在 R2 中的镜像对象（读路径只碰它，不查 D1） */
+const STATE_R2_KEY = "__overlay-state.json";
 
 type SerializedState = {
   version: number;
@@ -102,37 +96,42 @@ const deserializeState = (s: SerializedState): UserState => {
   };
 };
 
+/** 模块级缓存：同一 isolate 内连 R2 都省掉；跨 isolate/跨 PoP 由 R2 镜像兜底 */
+let userStateCache: { state: UserState; expires: number } | null = null;
+const USER_STATE_TTL = 30_000;
+
 const getSharedCache = (): Cache | undefined =>
   (globalThis as { caches?: CacheStorage }).caches?.default;
 
-/** 写操作后调用，使两级缓存立即失效 */
-export const invalidateUserState = (): void => {
-  userStateCache = null;
-  const cache = getSharedCache();
-  if (cache) void cache.delete(STATE_CACHE_URL).catch(() => {});
-};
-
-/** 一次性读取整个覆盖层（模块缓存 + Cache API 两级） */
-export const loadUserState = async (db: D1Database | undefined): Promise<UserState> => {
-  if (!db) return EMPTY_STATE;
-
-  const now = Date.now();
-  if (userStateCache && userStateCache.expires > now) return userStateCache.state;
-
+const writeCaches = async (env: Env, state: UserState): Promise<void> => {
+  userStateCache = { state, expires: Date.now() + USER_STATE_TTL };
+  try {
+    await env.R2.put(STATE_R2_KEY, JSON.stringify(serializeState(state)));
+  } catch {
+    // R2 镜像写入失败：下次会回源 D1，不影响正确性
+  }
   const cache = getSharedCache();
   if (cache) {
     try {
-      const hit = await cache.match(STATE_CACHE_URL);
-      if (hit) {
-        const state = deserializeState((await hit.json()) as SerializedState);
-        userStateCache = { state, expires: now + USER_STATE_TTL };
-        return state;
-      }
+      await cache.put(
+        "https://card.585119.xyz/__overlay-state.json",
+        new Response(JSON.stringify(serializeState(state)), {
+          headers: { "Cache-Control": "max-age=30" },
+        }),
+      );
     } catch {
-      // Cache API 不可用时降级到 D1
+      // 忽略
     }
   }
+};
 
+/** 写操作后调用：清掉模块缓存，R2 镜像由 bumpVersion 主动刷新 */
+export const invalidateUserState = (): void => {
+  userStateCache = null;
+};
+
+/** 从 D1 回源整份覆盖层（慢路径，仅写操作或 R2 未就绪时触发） */
+const readStateFromD1 = async (db: D1Database): Promise<UserState> => {
   const [meta, overrideRows, extraRows, tombRows, bookRows] = await Promise.all([
     db.prepare("SELECT value FROM meta WHERE key = 'version'").first<{ value: string }>(),
     db.prepare("SELECT uid, field_key, value FROM overrides").all<FieldOverrideRow>(),
@@ -156,7 +155,7 @@ export const loadUserState = async (db: D1Database | undefined): Promise<UserSta
     extraByBook.set(row.book_id, list);
   }
 
-  const state: UserState = {
+  return {
     version: Number(meta?.value ?? "0") || 0,
     overrides,
     extraContacts,
@@ -164,33 +163,46 @@ export const loadUserState = async (db: D1Database | undefined): Promise<UserSta
     tombstones: new Set((tombRows.results ?? []).map((r) => r.uid)),
     customBooks: bookRows.results ?? [],
   };
-  userStateCache = { state, expires: now + USER_STATE_TTL };
+};
 
-  if (cache) {
-    try {
-      await cache.put(
-        STATE_CACHE_URL,
-        new Response(JSON.stringify(serializeState(state)), {
-          headers: { "Cache-Control": "max-age=60" },
-        }),
-      );
-    } catch {
-      // 缓存写入失败不影响主流程
+/**
+ * 读取覆盖层状态：模块缓存 → R2 镜像 → D1 回源。
+ * 正常同步路径完全不查 D1，规避冷查询导致的 iOS 超时。
+ */
+export const loadUserState = async (env: Env): Promise<UserState> => {
+  const db = env.DB;
+  if (!db) return EMPTY_STATE;
+
+  const now = Date.now();
+  if (userStateCache && userStateCache.expires > now) return userStateCache.state;
+
+  // R2 镜像：跨 isolate、跨 PoP 一致，读小对象极快
+  try {
+    const object = await env.R2.get(STATE_R2_KEY);
+    if (object) {
+      const state = deserializeState((await object.json()) as SerializedState);
+      userStateCache = { state, expires: now + USER_STATE_TTL };
+      return state;
     }
+  } catch {
+    // R2 读取失败则回源 D1
   }
+
+  const state = await readStateFromD1(db);
+  await writeCaches(env, state);
   return state;
 };
 
-/** 写操作后递增版本号 */
-export const bumpVersion = async (db: D1Database): Promise<number> => {
+/** 写操作后递增版本号，并把最新状态刷新到 R2 镜像 */
+export const bumpVersion = async (env: Env): Promise<number> => {
+  const db = env.DB;
+  if (!db) return 0;
   await db
     .prepare("UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'version'")
     .run();
-  invalidateUserState();
-  const row = await db.prepare("SELECT value FROM meta WHERE key = 'version'").first<{
-    value: string;
-  }>();
-  return Number(row?.value ?? "0") || 0;
+  const state = await readStateFromD1(db);
+  await writeCaches(env, state);
+  return state.version;
 };
 
 /**
