@@ -148,7 +148,8 @@ describe("管理界面与 API", () => {
     const vcard = await get.text();
     expect(vcard).toContain("我的自定义值");
     expect(vcard).toContain("UID:" + firstContact.uid);
-    expect(vcard).toContain("PHOTO;ENCODING=b");
+    // CardDAV 模式不内嵌 PHOTO（避免同步超时）
+    expect(vcard).not.toContain("PHOTO");
   });
 
   test("用户改过的字段在模拟上游更新后仍保留用户值", () => {

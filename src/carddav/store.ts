@@ -49,9 +49,25 @@ export const EMPTY_STATE: UserState = {
   customBooks: [],
 };
 
-/** 一次性读取整个覆盖层 */
+/**
+ * 模块级缓存：D1 覆盖层读多写少，缓存几秒可大幅降低
+ * 冷查询带来的偶发慢（免费版 D1 性能波动明显）。
+ * 写操作（bumpVersion 等）会调用 invalidateUserState 主动失效。
+ */
+let userStateCache: { state: UserState; expires: number } | null = null;
+const USER_STATE_TTL = 10_000;
+
+/** 写操作后调用，使缓存立即失效 */
+export const invalidateUserState = (): void => {
+  userStateCache = null;
+};
+
+/** 一次性读取整个覆盖层（带短缓存） */
 export const loadUserState = async (db: D1Database | undefined): Promise<UserState> => {
   if (!db) return EMPTY_STATE;
+
+  const now = Date.now();
+  if (userStateCache && userStateCache.expires > now) return userStateCache.state;
 
   const [meta, overrideRows, extraRows, tombRows, bookRows] = await Promise.all([
     db.prepare("SELECT value FROM meta WHERE key = 'version'").first<{ value: string }>(),
@@ -76,7 +92,7 @@ export const loadUserState = async (db: D1Database | undefined): Promise<UserSta
     extraByBook.set(row.book_id, list);
   }
 
-  return {
+  const state: UserState = {
     version: Number(meta?.value ?? "0") || 0,
     overrides,
     extraContacts,
@@ -84,6 +100,8 @@ export const loadUserState = async (db: D1Database | undefined): Promise<UserSta
     tombstones: new Set((tombRows.results ?? []).map((r) => r.uid)),
     customBooks: bookRows.results ?? [],
   };
+  userStateCache = { state, expires: now + USER_STATE_TTL };
+  return state;
 };
 
 /** 写操作后递增版本号 */
@@ -91,6 +109,7 @@ export const bumpVersion = async (db: D1Database): Promise<number> => {
   await db
     .prepare("UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'version'")
     .run();
+  invalidateUserState();
   const row = await db.prepare("SELECT value FROM meta WHERE key = 'version'").first<{
     value: string;
   }>();
