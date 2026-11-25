@@ -7,3 +7,4 @@ radicale
 dist
 .wrangler
 .workbuddy
+tmp-*.html
