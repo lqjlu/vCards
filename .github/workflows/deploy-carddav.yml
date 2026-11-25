@@ -41,8 +41,12 @@ jobs:
         run: bun run build:carddav
 
       - name: Set CardDAV password secret
-        if: ${{ secrets.CARDDAV_PASS != '' }}
-        run: echo -n "$CARDDAV_PASS" | npx wrangler secret put CARDDAV_PASS
+        run: |
+          if [ -n "$CARDDAV_PASS" ]; then
+            printf '%s' "$CARDDAV_PASS" | npx wrangler secret put CARDDAV_PASS
+          else
+            echo "CARDDAV_PASS secret not set; skip"
+          fi
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
