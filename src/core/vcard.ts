@@ -40,7 +40,12 @@ export const renderVCard = async (
     vcard.uid = vcard.organization;
   }
 
-  vcard.photo.embedFromFile(yamlPath.replace(/\.yaml$/, ".png"));
+  // CardDAV 模式不嵌入 PHOTO：手机通讯录同步用不到 logo，
+  // 且内嵌的 base64 图片会把单个地址簿的响应撑到数百 KB，
+  // 导致 iOS 客户端同步超时（CardDAV 只读黄页无需头像）。
+  if (!carddav) {
+    vcard.photo.embedFromFile(yamlPath.replace(/\.yaml$/, ".png"));
+  }
 
   let formatted = vcard.getFormattedString();
 
