@@ -50,24 +50,88 @@ export const EMPTY_STATE: UserState = {
 };
 
 /**
- * 模块级缓存：D1 覆盖层读多写少，缓存几秒可大幅降低
- * 冷查询带来的偶发慢（免费版 D1 性能波动明显）。
- * 写操作（bumpVersion 等）会调用 invalidateUserState 主动失效。
+ * 两级缓存：模块级缓存 + Cloudflare Cache API。
+ *
+ * 免费版 D1 冷查询偶发极慢（实测 1~27 秒）。iOS 全量同步会并发请求
+ * 20 个地址簿，若各自落到新 isolate 并冷查 D1，会累积到客户端超时。
+ * 模块级缓存只在单个 isolate 内有效；Cache API 可在同一数据中心跨
+ * isolate 共享，把 20 次冷查询降为 1 次。写操作后主动失效两级缓存。
  */
 let userStateCache: { state: UserState; expires: number } | null = null;
-const USER_STATE_TTL = 10_000;
+const USER_STATE_TTL = 30_000;
+const STATE_CACHE_URL = "https://card.585119.xyz/__user-state-cache.json";
 
-/** 写操作后调用，使缓存立即失效 */
-export const invalidateUserState = (): void => {
-  userStateCache = null;
+type SerializedState = {
+  version: number;
+  overrides: Array<{ uid: string; key: string; value: string | null }>;
+  extraContacts: ExtraContactRow[];
+  tombstones: string[];
+  customBooks: CustomBookRow[];
 };
 
-/** 一次性读取整个覆盖层（带短缓存） */
+const serializeState = (s: UserState): SerializedState => ({
+  version: s.version,
+  overrides: [...s.overrides.entries()].flatMap(([uid, list]) =>
+    list.map((o) => ({ uid, key: o.key, value: o.value })),
+  ),
+  extraContacts: s.extraContacts,
+  tombstones: [...s.tombstones],
+  customBooks: s.customBooks,
+});
+
+const deserializeState = (s: SerializedState): UserState => {
+  const overrides = new Map<string, Array<{ key: string; value: string | null }>>();
+  for (const o of s.overrides) {
+    const list = overrides.get(o.uid) ?? [];
+    list.push({ key: o.key, value: o.value });
+    overrides.set(o.uid, list);
+  }
+  const extraByBook = new Map<string, ExtraContactRow[]>();
+  for (const row of s.extraContacts) {
+    const list = extraByBook.get(row.book_id) ?? [];
+    list.push(row);
+    extraByBook.set(row.book_id, list);
+  }
+  return {
+    version: s.version,
+    overrides,
+    extraContacts: s.extraContacts,
+    extraByBook,
+    tombstones: new Set(s.tombstones),
+    customBooks: s.customBooks,
+  };
+};
+
+const getSharedCache = (): Cache | undefined =>
+  (globalThis as { caches?: CacheStorage }).caches?.default;
+
+/** 写操作后调用，使两级缓存立即失效 */
+export const invalidateUserState = (): void => {
+  userStateCache = null;
+  const cache = getSharedCache();
+  if (cache) void cache.delete(STATE_CACHE_URL).catch(() => {});
+};
+
+/** 一次性读取整个覆盖层（模块缓存 + Cache API 两级） */
 export const loadUserState = async (db: D1Database | undefined): Promise<UserState> => {
   if (!db) return EMPTY_STATE;
 
   const now = Date.now();
   if (userStateCache && userStateCache.expires > now) return userStateCache.state;
+
+  const cache = getSharedCache();
+  if (cache) {
+    try {
+      const hit = await cache.match(STATE_CACHE_URL);
+      if (hit) {
+        const state = deserializeState((await hit.json()) as SerializedState);
+        userStateCache = { state, expires: now + USER_STATE_TTL };
+        return state;
+      }
+    } catch {
+      // Cache API 不可用时降级到 D1
+    }
+  }
 
   const [meta, overrideRows, extraRows, tombRows, bookRows] = await Promise.all([
     db.prepare("SELECT value FROM meta WHERE key = 'version'").first<{ value: string }>(),
@@ -101,6 +165,19 @@ export const loadUserState = async (db: D1Database | undefined): Promise<UserSta
     customBooks: bookRows.results ?? [],
   };
   userStateCache = { state, expires: now + USER_STATE_TTL };
+
+  if (cache) {
+    try {
+      await cache.put(
+        STATE_CACHE_URL,
+        new Response(JSON.stringify(serializeState(state)), {
+          headers: { "Cache-Control": "max-age=60" },
+        }),
+      );
+    } catch {
+      // 缓存写入失败不影响主流程
+    }
+  }
   return state;
 };
 
