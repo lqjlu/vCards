@@ -79,6 +79,18 @@ describe("mergeVCard", () => {
     expect(merged.indexOf("我自己加的备注")).toBeLessThan(endIndex);
   });
 
+  test("连续添加多个电话：~N 去重后缀不会写进 vCard", () => {
+    const merged = mergeVCard(BASE, [
+      { key: "+TEL;TYPE=CELL", value: "13700000000" },
+      { key: "+TEL;TYPE=CELL~2", value: "13700000001" },
+      { key: "+TEL;TYPE=CELL~3", value: "13700000002" },
+    ]);
+    expect(merged).toContain("TEL;TYPE=CELL:13700000000");
+    expect(merged).toContain("TEL;TYPE=CELL:13700000001");
+    expect(merged).toContain("TEL;TYPE=CELL:13700000002");
+    expect(merged).not.toContain("~");
+  });
+
   test("上游改了用户没碰的字段，用上游新值", () => {
     const upstreamUpdated = BASE.replace("URL:https://example.com", "URL:https://new.example.com");
     const merged = mergeVCard(upstreamUpdated, [{ key: "ORG#0", value: "我的公司" }]);

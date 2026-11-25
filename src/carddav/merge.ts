@@ -119,7 +119,7 @@ export const mergeVCard = (base: string, overrides: FieldOverride[]): string => 
     output.splice(
       insertAt,
       0,
-      ...additions.map((o) => `${o.key.slice(1)}:${o.value}`),
+      ...additions.map((o) => `${o.key.slice(1).replace(/~\d+$/, "")}:${o.value}`),
     );
   }
 
@@ -137,7 +137,9 @@ export const buildVCard = (params: {
   const lines = ["BEGIN:VCARD", "VERSION:3.0"];
   for (const field of params.fields) {
     if (!field.value.trim()) continue;
-    const baseKey = field.key.startsWith("+") ? field.key.slice(1) : field.key.replace(/#\d+$/, "");
+    const baseKey = field.key.startsWith("+")
+      ? field.key.slice(1).replace(/~\d+$/, "")
+      : field.key.replace(/#\d+$/, "");
     lines.push(`${baseKey}:${field.value}`);
   }
   lines.push(`UID:${params.uid}`);

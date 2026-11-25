@@ -75,7 +75,7 @@ const listContacts = async (env: Env): Promise<Response> => {
       for (const o of overrides.filter((o) => o.key.startsWith("+"))) {
         fields.push({
           key: o.key,
-          label: o.key.slice(1),
+          label: o.key.slice(1).replace(/~\d+$/, ""),
           value: o.value ?? "",
           edited: true,
         });
@@ -101,7 +101,12 @@ const listContacts = async (env: Env): Promise<Response> => {
       edited: overrideMap.has(f.key),
     }));
     for (const o of overrides.filter((o) => o.key.startsWith("+"))) {
-      fields.push({ key: o.key, label: o.key.slice(1), value: o.value ?? "", edited: true });
+      fields.push({
+        key: o.key,
+        label: o.key.slice(1).replace(/~\d+$/, ""),
+        value: o.value ?? "",
+        edited: true,
+      });
     }
     const custom = state.customBooks.find((b) => b.id === row.book_id);
     const baseBook = catalog.books.find((b) => b.id === row.book_id);

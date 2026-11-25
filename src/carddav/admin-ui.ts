@@ -185,6 +185,8 @@ label{color:var(--muted);font-size:12px}
 let DATA={contacts:[],version:0},BOOKS=[],CUR=null,SEL=new Set(),CAT='';
 const $=id=>document.getElementById(id);
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+const FIELD_NAMES={TEL:'电话',EMAIL:'邮箱',URL:'网址',ORG:'组织',ADR:'地址',NOTE:'备注',FN:'名称',N:'姓名',TITLE:'头衔',BDAY:'生日',IMPP:'即时通讯','X-SOCIALPROFILE':'社交账号'};
+function fieldName(label){const base=String(label||'').split(';')[0].toUpperCase();return FIELD_NAMES[base]||label}
 function enc(s){return encodeURIComponent(String(s??'')).replace(/'/g,'%27')}
 function notify(text,ok=true){const m=$('msg');m.className='msg show '+(ok?'ok':'err');m.textContent=text;setTimeout(()=>m.className='msg',3500)}
 function closeDetail(){$('detail').style.display='none'}
@@ -273,7 +275,7 @@ const d=$('detail');d.style.display='block';
 d.innerHTML='<h2>联系人：'+esc(c.name)+' <span class="badge">'+(c.source==='user'?'我添加':'GitHub')+'</span><span class="book">'+esc(c.book)+'</span></h2>'+
 c.fields.filter(f=>f.value&&f.value!=='__DELETED__').map(f=>{
 const tel=/^TEL/i.test(f.label);
-return '<div class="drow"><span class="dk">'+esc(f.label)+(f.edited?' · 已修改':'')+'</span>'+
+return '<div class="drow"><span class="dk">'+esc(fieldName(f.label))+(f.edited?' · 已修改':'')+'</span>'+
 '<span class="dv">'+esc(f.value)+'</span>'+
 '<button type="button" class="btn" onclick="copyText(\\''+enc(f.value)+'\\',true)">复制</button>'+
 (tel?'<a href="tel:'+esc(f.value)+'">拨打</a>':'')+'</div>';
@@ -289,16 +291,15 @@ const e=$('editor');e.style.display='block';
 e.innerHTML='<h2>编辑：'+esc(CUR.name)+' <span class="book">'+esc(CUR.book)+'</span></h2>'+
 '<div id="fields">'+
 CUR.fields.map((f,i)=>
-'<div class="field-row" data-i="'+i+'"><div class="key" title="'+esc(f.key)+'">'+esc(f.label)+'</div>'+
-'<input value="'+esc(f.value)+'" data-i="'+i+'">'+
+'<div class="field-row" data-i="'+i+'"><div class="key" title="'+esc(f.key)+'">'+esc(fieldName(f.label))+'</div>'+
+'<input value="'+esc(f.value)+'" data-i="'+i+'" placeholder="'+esc(fieldName(f.label))+'">'+
 (f.edited?'<span class="origin">已修改</span>':'')+
 '<button type="button" class="btn danger" onclick="removeField('+i+')" title="删除此字段">×</button></div>'
 ).join('')+
 '</div>'+
 '<form class="inline" style="margin-top:10px" onsubmit="addField(event)">'+
-'<input id="afKey" placeholder="新字段类型，如 TEL;TYPE=CELL" required>'+
-'<input id="afVal" placeholder="字段值">'+
-'<button type="submit" class="btn">+ 添加字段</button></form>'+
+'<input id="afVal" placeholder="电话号码">'+
+'<button type="submit" class="btn">+ 添加电话</button></form>'+
 '<div class="actions">'+
 '<button type="button" class="btn primary" onclick="saveEdit()">保存</button>'+
 '<button type="button" class="btn" onclick="closeEditor()">取消</button>'+
@@ -307,8 +308,10 @@ e.scrollIntoView({behavior:'smooth',block:'nearest'});
 }
 function removeField(i){CUR.fields[i].value='__DELETED__';CUR.fields[i].edited=true;
 const row=document.querySelector('#fields .field-row[data-i="'+i+'"]');if(row)row.style.opacity='.4';}
-function addField(ev){ev.preventDefault();const k=$('afKey').value.trim(),v=$('afVal').value.trim();if(!k)return;
-CUR.fields.push({key:'+'+k,label:k,value:v,edited:true});$('afVal').value='';$('afKey').value='';openEditByUid(CUR.uid);}
+function addField(ev){ev.preventDefault();const v=$('afVal').value.trim();if(!v)return;
+const base='TEL;TYPE=CELL';let n=1,k='+'+base;
+while(CUR.fields.some(f=>f.key===k)){n++;k='+'+base+'~'+n;}
+CUR.fields.push({key:k,label:base,value:v,edited:true});$('afVal').value='';$('afVal').focus();openEditByUid(CUR.uid);}
 function openEditByUid(uid){const c=CUR;openEdit(uid);CUR=c;}
 function collectFields(){
 const out=[],deleted=[];
