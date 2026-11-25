@@ -23,6 +23,11 @@ main{max-width:960px;margin:20px auto;padding:0 16px}
 .toolbar{display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap;align-items:center}
 .toolbar .q{flex:1;min-width:220px}
 .toolbar select{min-width:150px}
+.cats{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.cat{padding:4px 11px;border:1px solid var(--line);border-radius:20px;background:var(--card);cursor:pointer;font-size:13px;white-space:nowrap}
+.cat:hover{border-color:var(--accent)}
+.cat.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.cat .n{opacity:.65;font-size:11px;margin-left:3px;font-variant-numeric:tabular-nums}
 .stat{color:var(--muted);font-size:12px;margin-bottom:12px}
 .bulk{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center}
 .bulk button{padding:6px 10px;font-size:13px}
@@ -75,9 +80,9 @@ label{color:var(--muted);font-size:12px}
 <div id="msg" class="msg"></div>
 <div class="toolbar">
 <input id="q" class="q" placeholder="搜索名称、分类、电话、任意字段…" oninput="render()">
-<select id="cat" onchange="render()"><option value="">全部分类</option></select>
 <button class="primary" onclick="openNew()">+ 新增联系人</button>
 </div>
+<div id="cats" class="cats"></div>
 <div class="bulk">
 <label><input type="checkbox" id="all" onchange="toggleAll()" style="width:auto"> 全选当前结果</label>
 <span id="selinfo" class="book"></span>
@@ -102,7 +107,7 @@ label{color:var(--muted);font-size:12px}
 <div id="list" class="list"></div>
 </main>
 <script>
-let DATA={contacts:[],version:0},BOOKS=[],CUR=null,SEL=new Set();
+let DATA={contacts:[],version:0},BOOKS=[],CUR=null,SEL=new Set(),CAT='';
 const $=id=>document.getElementById(id);
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function enc(s){return encodeURIComponent(String(s??'')).replace(/'/g,'%27')}
@@ -115,16 +120,24 @@ try{
 DATA=await api('/admin/api/contacts');
 BOOKS=(await api('/admin/api/books')).books;
 $('ver').textContent='数据版本 v'+DATA.version;
-$('cat').innerHTML='<option value="">全部分类</option>'+BOOKS.map(b=>'<option value="'+esc(b.name)+'">'+esc(b.name)+'</option>').join('');
 const sel=$('nBook');sel.innerHTML=BOOKS.map(b=>'<option value="'+esc(b.id)+'">'+esc(b.name)+'</option>').join('');
+renderCats();
 render();
 }catch(e){notify('加载失败：'+e.message,false)}
 }
 function tels(c){return c.fields.filter(f=>/^TEL/i.test(f.label)&&f.value&&f.value!=='__DELETED__').map(f=>f.value)}
+function catCounts(){const m={};for(const c of DATA.contacts)m[c.book]=(m[c.book]||0)+1;return m}
+function renderCats(){
+const counts=catCounts();
+let h='<button class="cat'+(CAT===''?' on':'')+'" data-cat="">全部 <span class="n">'+DATA.contacts.length+'</span></button>';
+for(const b of BOOKS){const n=counts[b.name]||0;h+='<button class="cat'+(CAT===b.name?' on':'')+'" data-cat="'+esc(b.name)+'">'+esc(b.name)+' <span class="n">'+n+'</span></button>'}
+$('cats').innerHTML=h;
+}
+function setCat(name){CAT=name;renderCats();render()}
 function filtered(){
-const q=$('q').value.trim().toLowerCase(),cat=$('cat').value;
+const q=$('q').value.trim().toLowerCase();
 return DATA.contacts.filter(c=>{
-if(cat&&c.book!==cat)return false;
+if(CAT&&c.book!==CAT)return false;
 if(!q)return true;
 return[c.name,c.book,...c.fields.map(f=>f.value)].join(' ').toLowerCase().includes(q);
 });
@@ -148,6 +161,7 @@ return '<div class="item">'+
 }).join('')||'<div class="book">没有匹配的联系人</div>';
 $('all').checked=list.length>0&&list.every(c=>SEL.has(c.uid));
 updateSelInfo();
+renderCats();
 }
 function toggleSel(uid){uid=decodeURIComponent(uid);if(SEL.has(uid))SEL.delete(uid);else SEL.add(uid);render()}
 function toggleAll(){const list=filtered();const all=list.every(c=>SEL.has(c.uid));list.forEach(c=>all?SEL.delete(c.uid):SEL.add(c.uid));render()}
@@ -249,6 +263,7 @@ try{const r=await api('/admin/api/contacts',{method:'POST',headers:{'Content-Typ
 notify('已创建，数据版本 v'+r.version);$('newPanel').style.display='none';await load();openEdit(encodeURIComponent(uid));
 }catch(e){notify('创建失败：'+e.message,false)}
 }
+$('cats').addEventListener('click',function(ev){const b=ev.target.closest('[data-cat]');if(b)setCat(b.getAttribute('data-cat'))});
 load();
 </script>
 </body>
