@@ -17,5 +17,16 @@
     "noFallthroughCasesInSwitch": true,
     "skipLibCheck": true
   },
-  "include": ["src/carddav/worker.ts", "src/carddav/worker.test.ts", "src/carddav/types.ts"]
+  "include": [
+    "src/carddav/worker.ts",
+    "src/carddav/worker.test.ts",
+    "src/carddav/admin.ts",
+    "src/carddav/admin.test.ts",
+    "src/carddav/admin-ui.ts",
+    "src/carddav/store.ts",
+    "src/carddav/worker-types.ts",
+    "src/carddav/merge.ts",
+    "src/carddav/merge.test.ts",
+    "src/carddav/types.ts"
+  ]
 }

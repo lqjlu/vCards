@@ -9,6 +9,12 @@ workers_dev = true
 binding = "R2"
 bucket_name = "vcards-carddav"
 
+# D1 覆盖层：存放用户编辑/新增/删除的联系人
+[[d1_databases]]
+binding = "DB"
+database_name = "vcards-overlay"
+database_id = "439c846f-68c5-41dd-9391-666cc4587632"
+
 # 自定义域名路由
 [[routes]]
 pattern = "card.585119.xyz"

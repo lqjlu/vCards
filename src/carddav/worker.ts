@@ -14,16 +14,29 @@
  */
 
 import type { BookData, Catalog, CatalogBook, CatalogContact } from "./types";
+import type { Env } from "./worker-types";
+import { handleAdminApi } from "./admin";
+import { ADMIN_HTML } from "./admin-ui";
+import {
+  applyOverrides,
+  loadUserState,
+  mergedCtag,
+  mergedEtag,
+  type UserState,
+} from "./store";
 
-interface Env {
-  R2: R2Bucket;
-  /** Basic Auth 用户名，默认 cn */
-  CARDDAV_USER?: string;
-  /** Basic Auth 密码，默认 cn */
-  CARDDAV_PASS?: string;
-  /** 是否允许匿名访问，默认 false */
-  ALLOW_ANONYMOUS?: string;
-}
+/** Workers 运行时的 SHA-256（同步接口用简易 hash 兜底） */
+const hashHex = (value: string): string => {
+  // 使用 DJB2 变体，仅用于 ETag/CTag 变化检测，非安全用途
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  for (let i = 0; i < value.length; i++) {
+    const c = value.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 0x01000193);
+    h2 = Math.imul(h2 + c, 0x85ebca6b);
+  }
+  return ((h1 >>> 0).toString(16) + (h2 >>> 0).toString(16)).padStart(16, "0");
+};
 
 const NS = {
   D: "DAV:",
@@ -197,9 +210,9 @@ const resolveRoute = (pathname: string): Route => {
   return { kind: "unknown" };
 };
 
-/** 从 R2 读取清单，模块级缓存减少子请求 */
+/** 从 R2 读取基线清单（模块级缓存减少子请求） */
 let catalogCache: { value: Catalog; expires: number } | null = null;
-const getCatalog = async (env: Env): Promise<Catalog> => {
+const getBaseCatalog = async (env: Env): Promise<Catalog> => {
   const now = Date.now();
   if (catalogCache && catalogCache.expires > now) return catalogCache.value;
   const object = await env.R2.get("catalog.json");
@@ -209,14 +222,114 @@ const getCatalog = async (env: Env): Promise<Catalog> => {
   return catalog;
 };
 
+/**
+ * 合并后的 catalog：
+ * - 过滤用户删除的联系人
+ * - 并入用户新增的联系人（含自定义分类簿）
+ * - CTag 叠加用户版本号，保证网页保存后客户端能增量同步
+ */
+const getCatalog = async (env: Env, state?: UserState): Promise<Catalog> => {
+  const base = await getBaseCatalog(env);
+  const user = state ?? (await loadUserState(env.DB));
+  if (user.version === 0 && user.extraContacts.length === 0 && user.tombstones.size === 0) {
+    return base;
+  }
+
+  const withExtras = (book: CatalogBook): CatalogBook => {
+    const baseContacts = book.contacts.filter((c) => !user.tombstones.has(c.uid));
+    const extras = (user.extraByBook.get(book.id) ?? []).map((row) => ({
+      id: row.id,
+      etag: row.etag,
+      uid: row.uid,
+    }));
+    const contacts = [...baseContacts, ...extras];
+    return {
+      ...book,
+      displayName: `${book.name}(${contacts.length})`,
+      ctag: mergedCtag(book.ctag, user, hashHex),
+      contacts,
+    };
+  };
+
+  const books = base.books.map(withExtras);
+  // 自定义分类簿
+  for (const custom of user.customBooks) {
+    const extras = user.extraByBook.get(custom.id) ?? [];
+    books.push({
+      id: custom.id,
+      name: custom.name,
+      displayName: `${custom.name}(${extras.length})`,
+      ctag: mergedCtag(`"custom-${custom.id}"`, user, hashHex),
+      contacts: extras.map((row) => ({ id: row.id, etag: row.etag, uid: row.uid })),
+    });
+  }
+
+  const macosContacts = [
+    ...base.macosBook.contacts.filter((c) => !user.tombstones.has(c.uid)),
+    ...user.extraContacts.map((row) => ({ id: row.id, etag: row.etag, uid: row.uid })),
+  ];
+  const macosBook: CatalogBook = {
+    ...base.macosBook,
+    displayName: `全部(${macosContacts.length})`,
+    ctag: mergedCtag(base.macosBook.ctag, user, hashHex),
+    contacts: macosContacts,
+  };
+
+  return {
+    ...base,
+    ctag: mergedCtag(base.ctag, user, hashHex),
+    books,
+    macosBook,
+  };
+};
+
 const getBookData = async (
   env: Env,
   mode: "ios" | "macos",
   bookId: string,
+  state?: UserState,
 ): Promise<BookData | null> => {
+  const user = state ?? (await loadUserState(env.DB));
   const object = await env.R2.get(`books/${mode}/${bookId}.json`);
-  if (!object) return null;
-  return (await object.json()) as BookData;
+  const base = object ? ((await object.json()) as BookData) : null;
+
+  // 自定义分类簿：基线没有文件，完全由用户新增联系人构成
+  const custom = user.customBooks.find((b) => b.id === bookId);
+  if (!base && !custom) return null;
+  const template: BookData = base ?? {
+    id: custom!.id,
+    name: custom!.name,
+    displayName: custom!.display_name,
+    ctag: `"custom-${custom!.id}"`,
+    contacts: [],
+  };
+
+  const baseContacts = template.contacts
+    .filter((c) => !user.tombstones.has(c.uid))
+    .map((c) => ({
+      ...c,
+      etag: mergedEtag(c.etag, c.uid, user, hashHex),
+      vcard: applyOverrides(c.vcard, c.uid, user),
+    }));
+
+  const extraRows =
+    mode === "macos"
+      ? user.extraContacts
+      : user.extraByBook.get(bookId) ?? [];
+  const extras = extraRows.map((row) => ({
+    id: row.id,
+    uid: row.uid,
+    etag: row.etag,
+    vcard: applyOverrides(row.vcard, row.uid, user),
+  }));
+
+  const contacts = [...baseContacts, ...extras];
+  return {
+    ...template,
+    displayName: `${template.name}(${contacts.length})`,
+    ctag: mergedCtag(template.ctag, user, hashHex),
+    contacts,
+  };
 };
 
 const findBook = (catalog: Catalog, mode: "ios" | "macos", bookId: string): CatalogBook | null => {
@@ -348,8 +461,9 @@ const handleHomePropfind = async (
   env: Env,
   mode: "ios" | "macos",
   depth: string,
+  state: UserState,
 ): Promise<Response> => {
-  const catalog = await getCatalog(env);
+  const catalog = await getCatalog(env, state);
   const base = baseUrl(request);
   const homeRoute: Extract<Route, { kind: "home" }> = { kind: "home", mode };
   const responses: string[] = [];
@@ -387,12 +501,13 @@ const handleBookPropfind = async (
   bookId: string,
   depth: string,
   body: string,
+  state: UserState,
 ): Promise<Response> => {
-  const catalog = await getCatalog(env);
+  const catalog = await getCatalog(env, state);
   const book = findBook(catalog, mode, bookId);
   if (!book) return notFound();
 
-  const data = await getBookData(env, mode, bookId);
+  const data = await getBookData(env, mode, bookId, state);
   if (!data) return notFound();
 
   const base = baseUrl(request);
@@ -438,8 +553,9 @@ const handleContactPropfind = async (
   bookId: string,
   contactId: string,
   body: string,
+  state: UserState,
 ): Promise<Response> => {
-  const data = await getBookData(env, mode, bookId);
+  const data = await getBookData(env, mode, bookId, state);
   if (!data) return notFound();
   const contact = findContact(data, contactId);
   if (!contact) return notFound();
@@ -452,7 +568,7 @@ const handleContactPropfind = async (
   ]);
 };
 
-const handlePropfind = async (request: Request, env: Env): Promise<Response> => {
+const handlePropfind = async (request: Request, env: Env, state: UserState): Promise<Response> => {
   const route = resolveRoute(new URL(request.url).pathname);
   const depth = request.headers.get("Depth") ?? "infinity";
   const body = await request.text();
@@ -463,22 +579,22 @@ const handlePropfind = async (request: Request, env: Env): Promise<Response> => 
     case "principal":
       return handlePrincipalPropfind(request);
     case "home":
-      return handleHomePropfind(request, env, route.mode, depth);
+      return handleHomePropfind(request, env, route.mode, depth, state);
     case "book":
-      return handleBookPropfind(request, env, route.mode, route.bookId, depth, body);
+      return handleBookPropfind(request, env, route.mode, route.bookId, depth, body, state);
     case "contact":
-      return handleContactPropfind(request, env, route.mode, route.bookId, route.contactId, body);
+      return handleContactPropfind(request, env, route.mode, route.bookId, route.contactId, body, state);
     default:
       return notFound();
   }
 };
 
 /** REPORT addressbook-query / addressbook-multiget */
-const handleReport = async (request: Request, env: Env): Promise<Response> => {
+const handleReport = async (request: Request, env: Env, state: UserState): Promise<Response> => {
   const route = resolveRoute(new URL(request.url).pathname);
   if (route.kind !== "book") return notFound();
 
-  const data = await getBookData(env, route.mode, route.bookId);
+  const data = await getBookData(env, route.mode, route.bookId, state);
   if (!data) return notFound();
 
   const body = await request.text();
@@ -519,10 +635,10 @@ const handleReport = async (request: Request, env: Env): Promise<Response> => {
 };
 
 /** GET/HEAD 单个联系人 */
-const handleGet = async (request: Request, env: Env): Promise<Response> => {
+const handleGet = async (request: Request, env: Env, state: UserState): Promise<Response> => {
   const route = resolveRoute(new URL(request.url).pathname);
   if (route.kind !== "contact") return notFound();
-  const data = await getBookData(env, route.mode, route.bookId);
+  const data = await getBookData(env, route.mode, route.bookId, state);
   if (!data) return notFound();
   const contact = findContact(data, route.contactId);
   if (!contact) return notFound();
@@ -563,17 +679,30 @@ export default {
     const authError = checkAuth(request, env);
     if (authError) return authError;
 
+    // 管理界面与 API
+    if (url.pathname === "/admin" || url.pathname === "/admin/") {
+      return new Response(ADMIN_HTML, {
+        status: 200,
+        headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+      });
+    }
+    if (url.pathname.startsWith("/admin/api/")) {
+      return await handleAdminApi(request, env, url.pathname);
+    }
+
+    const state = await loadUserState(env.DB);
+
     try {
       switch (method) {
         case "OPTIONS":
           return handleOptions();
         case "GET":
         case "HEAD":
-          return handleGet(request, env);
+          return handleGet(request, env, state);
         case "PROPFIND":
-          return await handlePropfind(request, env);
+          return await handlePropfind(request, env, state);
         case "REPORT":
-          return await handleReport(request, env);
+          return await handleReport(request, env, state);
         default:
           return methodNotAllowed();
       }

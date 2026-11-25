@@ -5,11 +5,12 @@
 ## 方案说明
 
 - **数据生成**：沿用项目的 YAML → vCard 流程，额外产出按地址簿聚合的 JSON
-- **在线服务**：Cloudflare Worker 实现只读 CardDAV（`PROPFIND` / `REPORT` / `GET`）
-- **存储**：R2 对象存储，只存放 `catalog.json` 与聚合 JSON
+- **在线服务**：Cloudflare Worker 实现 CardDAV（`PROPFIND` / `REPORT` / `GET`）与 Web 管理界面
+- **存储**：R2 存上游基线数据（只读），D1 存你的编辑与新增（可写），Worker 将两者按字段合并
 - **更新**：GitHub Actions 在数据或代码变更后自动重新构建、部署、上传
 
-> 服务为**只读**：不支持新增/修改/删除联系人，写方法一律返回 405。
+> CardDAV 端点仍为**只读**（写方法返回 405）；修改联系人通过 Web 管理界面完成，
+> 数据存在 D1 覆盖层，与上游更新叠加而非覆盖。详见文末「双源合并与管理界面」。
 
 ## 前置准备
 
@@ -164,8 +165,8 @@ dist/carddav/
 - **联动**：检测到变更后自动 commit、push，并显式触发 `deploy-carddav.yml` 重新部署
   - 说明：GitHub 用 `GITHUB_TOKEN` 的 push **不会**自动触发其他 workflow，所以这里用 `gh workflow run` 显式触发
 
-> ⚠️ 如果你在 fork 的 `data/` 里手动添加过独有数据，会被上游同步覆盖。
-> 需要保留的数据请放到自定义地址簿或另建目录。
+> ℹ️ 自己补充/修改的联系人**不要**写进 `data/`（会被上游同步覆盖），
+> 请通过 Web 管理界面录入，数据保存在 D1 覆盖层，与上游更新合并。
 
 > ⚠️ GitHub 对超过 60 天无活动的仓库会暂停定时任务。若发现不再自动同步，
 > 手动触发一次 `sync-upstream` workflow 即可恢复。
@@ -178,3 +179,68 @@ dist/carddav/
 - **子请求优化**：按地址簿预聚合 JSON，一次请求只读取 1-2 个 R2 对象，规避 Workers 免费版 50 个子请求上限
 - **.name 编码**：R2 对象名使用稳定哈希 ID，避免中文路径编码问题和重名覆盖
 - **缓存**：catalog 在 Worker 模块内缓存 60 秒；客户端响应设置 no-store 保证同步及时
+
+## 九、双源合并与管理界面
+
+### 数据来源
+
+```
+GitHub 上游 data/  →  构建  →  R2 基线数据（只读）
+                                    ↓
+你的编辑（Web 界面）  →  D1 覆盖层（可写）  →  Worker 按字段合并  →  CardDAV 客户端
+```
+
+- **基线**：上游的 321 个联系人，由 GitHub Actions 自动更新
+- **覆盖层**：你在网页上的修改、新增、删除，存在 Cloudflare D1 数据库
+- **合并规则**（以 vCard 的 UID 即机构名关联）：
+  - 你**改过的字段**：保留你的值，上游后续更新不影响它
+  - 你**没碰的字段**：上游更新后自动并入新值
+  - 你**删除的字段**：保持删除
+  - 你**删除的联系人**：写入墓碑，上游再更新也不会复活
+  - 你**新增的联系人**：可归入任意现有分类，或新建一个分类
+
+### D1 初始化（首次部署）
+
+```bash
+# token 需要 Account → D1: Edit 权限
+npx wrangler d1 create vcards-overlay
+# 把输出的 database_id 填进 wrangler.toml 的 [[d1_databases]]
+
+npx wrangler d1 execute vcards-overlay --remote --file=src/carddav/schema.sql
+```
+
+`wrangler.toml` 中的绑定：
+
+```toml
+[[d1_databases]]
+binding = "DB"
+database_name = "vcards-overlay"
+database_id = "<你的 database_id>"
+```
+
+### 使用管理界面
+
+打开 `https://card.585119.xyz/admin`，用 CardDAV 相同的账号密码登录。
+
+| 操作 | 步骤 |
+|---|---|
+| 搜索 | 顶部输入框，按名称/分类/电话过滤 |
+| 编辑 | 点联系人的「编辑」→ 改字段值 → 保存 |
+| 加字段 | 编辑器下方输入字段类型（如 `TEL;TYPE=CELL`）和值 |
+| 删字段 | 字段行右侧的 `×`，保存后生效 |
+| 新增联系人 | 顶部「+ 新增联系人」→ 填名称 → 选分类或新建分类 → 创建 |
+| 删除联系人 | 编辑器内「删除联系人」；基线联系人写墓碑，可在 API 恢复 |
+
+页面上的「已修改」标记表示该字段被你覆盖过（上游更新不会改变它）。
+
+### 同步到手机
+
+保存后 Worker 会递增全局版本号并更新 CTag，手机上的 CardDAV 客户端下次轮询
+（iOS 通常在 WiFi + 充电时）会自动拉取变化。想立即看到，可在通讯录 App 里下拉刷新，
+或删除账户重新添加。
+
+### 数据安全
+
+- D1 数据库在 Cloudflare 控制台可直接导出备份
+- 上游同步只写 `data/` 与 R2 基线，不碰 D1，你的编辑永远不会被覆盖
+- 管理界面复用 `CARDDAV_PASS` 认证，与 CardDAV 同一套密码
