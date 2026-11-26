@@ -100,6 +100,21 @@ describe("CardDAV Worker", () => {
     expect(response.headers.get("Location")).toBe("/cn/");
   });
 
+  test("iOS 的 com.apple.AddressBook UA 不被误判（关键回归）", async () => {
+    // iOS 与 macOS Contacts 共用 com.apple.AddressBook，仅凭它不能判为 macOS
+    for (const ua of [
+      "com.apple.AddressBook/1.0 (iOS)",
+      "com.apple.AddressBook",
+      "AddressBook/1.0",
+      "Contacts/1.0",
+    ]) {
+      const response = await call("/.well-known/carddav", {
+        headers: { "User-Agent": ua },
+      });
+      expect(response.headers.get("Location")).toBe("/cn/");
+    }
+  });
+
   test("macOS 根 PROPFIND 的 principal 指向合并簿", async () => {
     const response = await call("/", {
       method: "PROPFIND",

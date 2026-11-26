@@ -55,15 +55,16 @@ const NS = {
 const XML_DECL = '<?xml version="1.0" encoding="utf-8" ?>';
 
 /**
- * macOS 通讯录（Contacts.app）只支持每个账户一个地址簿，且固定取 home 中的第一个。
- * 若走 iOS 的多分类 home，它只会同步到第一个分类（本地生活，4 人）。
- * 通过 User-Agent 识别 macOS 客户端，把发现流程引导到专用的"全部"单簿入口。
- * iOS 的 UA 含 iPhone/iPad/iOS，需排除，避免破坏 iOS 的分类同步。
+ * macOS 通讯录（Contacts.app）每个账户只取 home 里的第一个地址簿，
+ * 需引导到"全部"单簿入口；iOS 则必须用多分类入口。
+ *
+ * 注意：两端 UA 都含 com.apple.AddressBook，不能据此判断。
+ * 只有 macOS 带 "Mac OS X" / "Macintosh"，iOS 带 iPhone/iPad/iOS，据此精确区分。
  */
 const isMacOSClient = (request: Request): boolean => {
   const ua = request.headers.get("User-Agent") ?? "";
   if (/iPhone|iPad|iPod|iOS|Android|DAVx5/i.test(ua)) return false;
-  return /Mac OS X|Macintosh|AddressBook|com\.apple\.AddressBook|Contacts/i.test(ua);
+  return /Mac OS X|Macintosh/i.test(ua);
 };
 
 const xmlEscape = (value: string): string =>
@@ -711,8 +712,8 @@ export default {
     const url = new URL(request.url);
 
     // 服务发现：/.well-known/carddav 重定向到 principal。
-    // macOS Contacts 只取 home 中第一个地址簿，引导它到"全部"单簿入口，
-    // 否则它只会同步到第一个分类（本地生活，4 人）。
+    // macOS 通讯录取第一个地址簿，引导到"全部"单簿入口；iOS 用多分类入口。
+    // 两端 UA 都含 com.apple.AddressBook，只用 Mac OS X / Macintosh 判定 macOS。
     if (url.pathname === "/.well-known/carddav" || url.pathname === "/.well-known/carddav/") {
       const location = isMacOSClient(request) ? "/cn/macos/" : "/cn/";
       return new Response(null, {
