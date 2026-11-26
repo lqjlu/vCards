@@ -353,3 +353,58 @@ load();
 </body>
 </html>
 `;
+
+/** 管理页登录界面（单文件，提交后由 Worker 设置会话 Cookie 并跳转） */
+export const LOGIN_HTML = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>登录 - vCards 通讯录管理</title>
+<style>
+:root{--bg:#f5f7fb;--panel:#fff;--line:#e5e9f2;--text:#1a2235;--muted:#70798c;--accent:#4f46e5;--accent-dark:#4338ca;--red:#c92a2a}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);color:var(--text);font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;-webkit-font-smoothing:antialiased;padding:20px}
+.card{width:100%;max-width:400px;background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:36px 32px;box-shadow:0 12px 32px rgba(26,34,53,.06)}
+.mark{width:48px;height:48px;border-radius:14px;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:600;margin:0 auto 18px}
+h1{font-size:20px;font-weight:600;text-align:center;margin:0 0 6px}
+.sub{text-align:center;color:var(--muted);font-size:13px;margin:0 0 26px}
+label{display:block;font-size:12px;color:var(--muted);margin:0 0 6px}
+input{width:100%;padding:11px 12px;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--text);font:inherit;margin:0 0 16px}
+input:focus{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px rgba(79,70,229,.12)}
+button{width:100%;padding:11px;border:0;border-radius:10px;background:var(--accent);color:#fff;font:inherit;font-weight:500;cursor:pointer}
+button:hover{background:var(--accent-dark)}
+button:disabled{opacity:.6;cursor:default}
+.err{display:none;color:var(--red);font-size:13px;text-align:center;margin:0 0 14px}
+</style>
+</head>
+<body>
+<div class="card">
+<div class="mark">V</div>
+<h1>vCards 通讯录管理</h1>
+<p class="sub">登录后管理黄页联系人</p>
+<div class="err" id="err"></div>
+<form id="f" onsubmit="login(event)">
+<label for="u">用户名</label>
+<input id="u" autocomplete="username" required>
+<label for="p">密码</label>
+<input id="p" type="password" autocomplete="current-password" required>
+<button type="submit" id="btn">登录</button>
+</form>
+</div>
+<script>
+async function login(ev){
+ev.preventDefault();
+const err=document.getElementById('err'),btn=document.getElementById('btn');
+err.style.display='none';btn.disabled=true;btn.textContent='登录中…';
+try{
+const r=await fetch('/admin/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:document.getElementById('u').value,password:document.getElementById('p').value})});
+const j=await r.json().catch(()=>({}));
+if(!r.ok){err.textContent=j.error||'登录失败';err.style.display='block';btn.disabled=false;btn.textContent='登录';return}
+location.href='/admin';
+}catch(e){err.textContent='网络错误：'+e.message;err.style.display='block';btn.disabled=false;btn.textContent='登录'}
+}
+</script>
+</body>
+</html>
+`;

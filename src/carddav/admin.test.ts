@@ -119,9 +119,45 @@ describe("管理界面与 API", () => {
     expect(() => new Function(script)).not.toThrow();
   });
 
-  test("未认证访问 /admin 返回 401", async () => {
+  test("未认证访问 /admin 显示登录页而非 Basic Auth 弹窗", async () => {
     const res = await worker.fetch(new Request("https://card.example.com/admin"), env, {} as ExecutionContext);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('onsubmit="login(event)"');
+    expect(html).toContain('/admin/api/login');
+  });
+
+  test("未认证访问管理 API 返回 401", async () => {
+    const res = await worker.fetch(new Request("https://card.example.com/admin/api/contacts"), env, {} as ExecutionContext);
     expect(res.status).toBe(401);
+  });
+
+  test("登录接口：错误密码返回 401，正确凭据返回会话 Cookie", async () => {
+    const wrong = await worker.fetch(new Request("https://card.example.com/admin/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "cn", password: "wrong" }),
+    }), env, {} as ExecutionContext);
+    expect(wrong.status).toBe(401);
+
+    const ok = await worker.fetch(new Request("https://card.example.com/admin/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "cn", password: "card" }),
+    }), env, {} as ExecutionContext);
+    expect(ok.status).toBe(200);
+    const cookie = ok.headers.get("Set-Cookie") ?? "";
+    expect(cookie).toContain("HttpOnly");
+    expect(cookie).toContain("vcards_admin=");
+
+    // 用签发的 Cookie 访问管理页应拿到管理界面
+    const token = cookie.split(";")[0]!;
+    const page = await worker.fetch(new Request("https://card.example.com/admin", {
+      headers: { Cookie: token },
+    }), env, {} as ExecutionContext);
+    const html = await page.text();
+    expect(html).toContain("vCards 通讯录管理");
+    expect(html).not.toContain('onsubmit="login(event)"');
   });
 
   test("列出联系人包含基线数据", async () => {

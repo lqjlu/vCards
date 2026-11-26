@@ -85,6 +85,43 @@ describe("CardDAV Worker", () => {
     expect(response.headers.get("Location")).toBe("/cn/");
   });
 
+  test("macOS 客户端 well-known 被引导到合并簿入口", async () => {
+    const response = await call("/.well-known/carddav", {
+      headers: { "User-Agent": "AddressBook/1.0 (Mac OS X 10.15.7)" },
+    });
+    expect(response.status).toBe(301);
+    expect(response.headers.get("Location")).toBe("/cn/macos/");
+  });
+
+  test("iOS 客户端不被误判为 macOS", async () => {
+    const response = await call("/.well-known/carddav", {
+      headers: { "User-Agent": "iOS/17.0 (iPhone; CPU iPhone OS 17_0)" },
+    });
+    expect(response.headers.get("Location")).toBe("/cn/");
+  });
+
+  test("macOS 根 PROPFIND 的 principal 指向合并簿", async () => {
+    const response = await call("/", {
+      method: "PROPFIND",
+      headers: {
+        Authorization: authHeader,
+        "User-Agent": "Contacts/1.0 (Mac OS X 14.0)",
+      },
+    });
+    const xml = await response.text();
+    expect(xml).toContain("/cn/macos/");
+  });
+
+  test("macOS home 补齐 principal 属性", async () => {
+    const response = await call("/cn/macos/", {
+      method: "PROPFIND",
+      headers: { Authorization: authHeader, Depth: "0" },
+    });
+    const xml = await response.text();
+    expect(xml).toContain("current-user-principal");
+    expect(xml).toContain("principal-URL");
+  });
+
   test("未认证请求返回 401", async () => {
     const response = await call("/cn/", { method: "PROPFIND" });
     expect(response.status).toBe(401);

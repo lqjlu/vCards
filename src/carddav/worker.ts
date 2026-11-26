@@ -16,7 +16,15 @@
 import type { BookData, Catalog, CatalogBook, CatalogContact } from "./types";
 import type { Env } from "./worker-types";
 import { handleAdminApi } from "./admin";
-import { ADMIN_HTML } from "./admin-ui";
+import {
+  checkCredentials,
+  clearCookie,
+  isAdminAuthenticated,
+  issueToken,
+  SESSION_MAX_AGE,
+  sessionCookie,
+} from "./admin-auth";
+import { ADMIN_HTML, LOGIN_HTML } from "./admin-ui";
 import {
   applyOverrides,
   loadUserState,
@@ -45,6 +53,18 @@ const NS = {
 } as const;
 
 const XML_DECL = '<?xml version="1.0" encoding="utf-8" ?>';
+
+/**
+ * macOS 通讯录（Contacts.app）只支持每个账户一个地址簿，且固定取 home 中的第一个。
+ * 若走 iOS 的多分类 home，它只会同步到第一个分类（本地生活，4 人）。
+ * 通过 User-Agent 识别 macOS 客户端，把发现流程引导到专用的"全部"单簿入口。
+ * iOS 的 UA 含 iPhone/iPad/iOS，需排除，避免破坏 iOS 的分类同步。
+ */
+const isMacOSClient = (request: Request): boolean => {
+  const ua = request.headers.get("User-Agent") ?? "";
+  if (/iPhone|iPad|iPod|iOS|Android|DAVx5/i.test(ua)) return false;
+  return /Mac OS X|Macintosh|AddressBook|com\.apple\.AddressBook|Contacts/i.test(ua);
+};
 
 const xmlEscape = (value: string): string =>
   value
@@ -80,6 +100,20 @@ const unauthorized = (realm: string): Response =>
   new Response("Unauthorized", {
     status: 401,
     headers: { "WWW-Authenticate": `Basic realm="${realm}"` },
+  });
+
+const jsonResponse = (
+  body: unknown,
+  status = 200,
+  extraHeaders: Record<string, string> = {},
+): Response =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store",
+      ...extraHeaders,
+    },
   });
 
 /** 常量时间比较，避免时序侧信道 */
@@ -435,7 +469,8 @@ const contactProps = (
 /** PROPFIND /：返回 current-user-principal */
 const handleRootPropfind = (request: Request): Response => {
   const base = baseUrl(request);
-  const principalHref = base + pathFor("cn") + "/";
+  const principalPath = isMacOSClient(request) ? pathFor("macos") : pathFor("cn");
+  const principalHref = base + principalPath + "/";
   const props =
     resourcetype("collection") +
     `<D:displayname>vCards</D:displayname>` +
@@ -468,11 +503,18 @@ const handleHomePropfind = async (
   const homeRoute: Extract<Route, { kind: "home" }> = { kind: "home", mode };
   const responses: string[] = [];
 
-  const homeProps =
+  const homeHref = hrefOf(base, homeRoute);
+  let homeProps =
     resourcetype("collection") +
     `<D:displayname>${mode === "macos" ? "全部通讯录" : "vCards 黄页"}</D:displayname>` +
-    `<C:addressbook-home-set><D:href>${xmlEscape(hrefOf(base, homeRoute))}</D:href></C:addressbook-home-set>`;
-  responses.push(responseBlock(hrefOf(base, homeRoute), homeProps));
+    `<C:addressbook-home-set><D:href>${xmlEscape(homeHref)}</D:href></C:addressbook-home-set>`;
+  // macOS 单簿入口同时充当 principal，补齐发现所需属性，避免客户端重新走 iOS 多簿路径
+  if (mode === "macos") {
+    homeProps +=
+      `<D:current-user-principal><D:href>${xmlEscape(homeHref)}</D:href></D:current-user-principal>` +
+      `<D:principal-URL><D:href>${xmlEscape(homeHref)}</D:href></D:principal-URL>`;
+  }
+  responses.push(responseBlock(homeHref, homeProps));
 
   if (depth !== "0") {
     const books = mode === "macos" ? [catalog.macosBook] : catalog.books;
@@ -668,27 +710,68 @@ export default {
     const method = request.method.toUpperCase();
     const url = new URL(request.url);
 
-    // 服务发现：/.well-known/carddav 重定向到 principal
+    // 服务发现：/.well-known/carddav 重定向到 principal。
+    // macOS Contacts 只取 home 中第一个地址簿，引导它到"全部"单簿入口，
+    // 否则它只会同步到第一个分类（本地生活，4 人）。
     if (url.pathname === "/.well-known/carddav" || url.pathname === "/.well-known/carddav/") {
+      const location = isMacOSClient(request) ? "/cn/macos/" : "/cn/";
       return new Response(null, {
         status: 301,
-        headers: { Location: "/cn/" },
+        headers: { Location: location },
       });
     }
 
-    const authError = checkAuth(request, env);
-    if (authError) return authError;
+    // ---- 管理页：会话登录（Cookie）或 Basic Auth ----
+    // 登录接口本身无需认证
+    if (url.pathname === "/admin/api/login" && method === "POST") {
+      let username = "";
+      let password = "";
+      try {
+        const body = (await request.json()) as { username?: string; password?: string };
+        username = body.username ?? "";
+        password = body.password ?? "";
+      } catch {
+        return jsonResponse({ error: "请求格式错误" }, 400);
+      }
+      if (!checkCredentials(username, password, env)) {
+        return jsonResponse({ error: "用户名或密码不正确" }, 401);
+      }
+      const token = await issueToken(username, env);
+      return jsonResponse(
+        { ok: true },
+        200,
+        { "Set-Cookie": sessionCookie(token, SESSION_MAX_AGE) },
+      );
+    }
 
-    // 管理界面与 API
+    if (url.pathname === "/admin/api/logout") {
+      return jsonResponse({ ok: true }, 200, { "Set-Cookie": clearCookie() });
+    }
+
+    // 管理页 HTML：未登录时返回登录页（不再用浏览器 Basic Auth 弹窗）
     if (url.pathname === "/admin" || url.pathname === "/admin/") {
+      if (!(await isAdminAuthenticated(request, env))) {
+        return new Response(LOGIN_HTML, {
+          status: 200,
+          headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+        });
+      }
       return new Response(ADMIN_HTML, {
         status: 200,
         headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
       });
     }
+
     if (url.pathname.startsWith("/admin/api/")) {
+      if (!(await isAdminAuthenticated(request, env))) {
+        return jsonResponse({ error: "未登录" }, 401);
+      }
       return await handleAdminApi(request, env, url.pathname);
     }
+
+    // ---- CardDAV：仍用 Basic Auth，保持 iOS/macOS 客户端兼容 ----
+    const authError = checkAuth(request, env);
+    if (authError) return authError;
 
     const state = await loadUserState(env);
 

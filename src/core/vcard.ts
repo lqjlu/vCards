@@ -1,7 +1,36 @@
+import sharp from "sharp";
 import vCardsJS from "vcards-js";
 import { isEmailEntry, isPhoneEntry } from "../const/schema";
 import { appendABLabel, appendPhonetic } from "../utils/line";
 import { readVCardData } from "./data";
+
+/**
+ * CardDAV 场景下的头像边长：通讯录头像 128px 足够清晰。
+ * 原图 512x512 内嵌后单张约 31KB base64，321 张让合并地址簿高达 10MB，
+ * 超过客户端单次同步的响应上限。缩到 128px 后单张约 6KB，总量降到约 2MB。
+ */
+const CARDDAV_PHOTO_SIZE = 128;
+const photoCache = new Map<string, string>();
+
+/** 读取 logo 并按需缩小，返回 { base64, mediaType } */
+const loadPhoto = async (
+  pngPath: string,
+  shrink: boolean,
+): Promise<{ base64: string; mediaType: string }> => {
+  if (!shrink) {
+    const { readFileSync } = await import("node:fs");
+    return { base64: readFileSync(pngPath).toString("base64"), mediaType: "png" };
+  }
+  const cached = photoCache.get(pngPath);
+  if (cached) return { base64: cached, mediaType: "png" };
+  const buffer = await sharp(pngPath)
+    .resize(CARDDAV_PHOTO_SIZE, CARDDAV_PHOTO_SIZE, { fit: "cover" })
+    .png({ compressionLevel: 9, palette: true })
+    .toBuffer();
+  const base64 = buffer.toString("base64");
+  photoCache.set(pngPath, base64);
+  return { base64, mediaType: "png" };
+};
 
 export interface RenderOptions {
   /**
@@ -40,8 +69,11 @@ export const renderVCard = async (
     vcard.uid = vcard.organization;
   }
 
-  // 内嵌机构 logo：CardDAV 与静态构建都需要保留头像
-  vcard.photo.embedFromFile(yamlPath.replace(/\.yaml$/, ".png"));
+  // 内嵌机构 logo：CardDAV 与静态构建都需要保留头像。
+  // CardDAV 模式下缩小到 128px，避免合并地址簿体积超限导致客户端只同步到前几个联系人。
+  const pngPath = yamlPath.replace(/\.yaml$/, ".png");
+  const photo = await loadPhoto(pngPath, Boolean(carddav));
+  vcard.photo.embedFromString(photo.base64, photo.mediaType);
 
   let formatted = vcard.getFormattedString();
 
