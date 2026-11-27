@@ -112,11 +112,14 @@ workflow 会自动把 `CARDDAV_PASS` 写入 Worker secret（每次部署时同�
 ### macOS
 
 1. 通讯录 → 设置 → 账户 → 其他通讯录账户 → 添加 CardDAV 账户
-2. 服务器：`https://carddav.example.com/cn/macos/`
-3. 用户名密码同上
+2. 服务器：`carddav.example.com`（填域名即可，不需要加路径）
+3. 用户名：`mac`（**注意：不是 cn**）
+4. 密码：与 iOS 相同（`CARDDAV_PASS`）
+5. 描述：任意，例如 `黄页-全部`
 
-> iOS 使用按分类的多个地址簿，macOS 使用合并为"全部"的单个地址簿。
-> 这样 iOS 可以分组管理，macOS 只有一个通讯录。
+> **为什么要用 `mac` 账号**：macOS 通讯录每个账户只同步第一个地址簿，无法像 iOS 那样管理 20 个分类。
+> 服务端用账号区分：`cn` 返回 20 个分类簿，`mac` 返回单个"全部"合并簿（321 人）。
+> 不能靠设备类型（User-Agent）自动判断——iOS 和 macOS 的通讯录 UA 完全相同，会互相误判。
 
 ### Android（DAVx⁵）
 
