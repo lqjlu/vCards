@@ -54,19 +54,6 @@ const NS = {
 
 const XML_DECL = '<?xml version="1.0" encoding="utf-8" ?>';
 
-/**
- * macOS 通讯录（Contacts.app）每个账户只取 home 里的第一个地址簿，
- * 需引导到"全部"单簿入口；iOS 则必须用多分类入口。
- *
- * 注意：两端 UA 都含 com.apple.AddressBook，不能据此判断。
- * 只有 macOS 带 "Mac OS X" / "Macintosh"，iOS 带 iPhone/iPad/iOS，据此精确区分。
- */
-const isMacOSClient = (request: Request): boolean => {
-  const ua = request.headers.get("User-Agent") ?? "";
-  if (/iPhone|iPad|iPod|iOS|Android|DAVx5/i.test(ua)) return false;
-  return /Mac OS X|Macintosh/i.test(ua);
-};
-
 const xmlEscape = (value: string): string =>
   value
     .replace(/&/g, "&amp;")
@@ -125,6 +112,28 @@ const timingSafeEqual = (a: string, b: string): boolean => {
   return diff === 0;
 };
 
+/**
+ * macOS 通讯录每个账户只取 home 中第一个地址簿，无法像 iOS 那样管理 20 个分类。
+ * 因此提供两个等价账号（同一密码）：
+ *   - CARDDAV_USER（默认 cn）：多分类地址簿，iOS 用
+ *   - CARDDAV_MAC_USER（默认 mac）：单个"全部"合并簿，macOS 用
+ * 用账号而非 UA 区分，彻底避开 Apple 两端 UA 重叠的问题。
+ */
+const MAC_USER = "mac";
+
+/** 从 Basic Auth 解析用户名，未认证返回 null */
+const getBasicUser = (request: Request): string | null => {
+  const header = request.headers.get("Authorization");
+  if (!header?.startsWith("Basic ")) return null;
+  try {
+    const decoded = atob(header.slice(6));
+    const separator = decoded.indexOf(":");
+    return separator < 0 ? null : decoded.slice(0, separator);
+  } catch {
+    return null;
+  }
+};
+
 const checkAuth = (request: Request, env: Env): Response | null => {
   if (env.ALLOW_ANONYMOUS === "true") return null;
 
@@ -145,7 +154,11 @@ const checkAuth = (request: Request, env: Env): Response | null => {
   const expectUser = env.CARDDAV_USER || "cn";
   const expectPass = env.CARDDAV_PASS || "cn";
 
-  if (!timingSafeEqual(username, expectUser) || !timingSafeEqual(password, expectPass)) {
+  // cn 与 mac 两个账号共用密码；mac 账号固定，不受 CARDDAV_USER 影响
+  const validUser =
+    timingSafeEqual(username, expectUser) ||
+    (expectUser !== MAC_USER && timingSafeEqual(username, MAC_USER));
+  if (!validUser || !timingSafeEqual(password, expectPass)) {
     return unauthorized("vCards");
   }
   return null;
@@ -470,8 +483,7 @@ const contactProps = (
 /** PROPFIND /：返回 current-user-principal */
 const handleRootPropfind = (request: Request): Response => {
   const base = baseUrl(request);
-  const principalPath = isMacOSClient(request) ? pathFor("macos") : pathFor("cn");
-  const principalHref = base + principalPath + "/";
+  const principalHref = base + pathFor("cn") + "/";
   const props =
     resourcetype("collection") +
     `<D:displayname>vCards</D:displayname>` +
@@ -479,14 +491,18 @@ const handleRootPropfind = (request: Request): Response => {
   return multistatus([responseBlock(base + "/", props)]);
 };
 
-/** PROPFIND /cn：principal 资源 */
-const handlePrincipalPropfind = (request: Request): Response => {
+/** PROPFIND /cn：principal 资源。按账号返回不同的地址簿 home */
+const handlePrincipalPropfind = (request: Request, env: Env): Response => {
   const base = baseUrl(request);
   const principalHref = base + pathFor("cn") + "/";
+  const username = getBasicUser(request);
+  const isMacAccount = username === MAC_USER;
+  const expectUser = env.CARDDAV_USER || "cn";
+  const homePath = isMacAccount ? pathFor("macos") : pathFor("addressbooks");
   const props =
     resourcetype("collection", "principal") +
-    `<D:displayname>cn</D:displayname>` +
-    `<C:addressbook-home-set><D:href>${xmlEscape(base + pathFor("addressbooks") + "/")}</D:href></C:addressbook-home-set>` +
+    `<D:displayname>${xmlEscape(username ?? expectUser)}</D:displayname>` +
+    `<C:addressbook-home-set><D:href>${xmlEscape(base + homePath + "/")}</D:href></C:addressbook-home-set>` +
     `<D:principal-URL><D:href>${xmlEscape(principalHref)}</D:href></D:principal-URL>`;
   return multistatus([responseBlock(principalHref, props)]);
 };
@@ -620,7 +636,7 @@ const handlePropfind = async (request: Request, env: Env, state: UserState): Pro
     case "root":
       return handleRootPropfind(request);
     case "principal":
-      return handlePrincipalPropfind(request);
+      return handlePrincipalPropfind(request, env);
     case "home":
       return handleHomePropfind(request, env, route.mode, depth, state);
     case "book":
@@ -711,14 +727,13 @@ export default {
     const method = request.method.toUpperCase();
     const url = new URL(request.url);
 
-    // 服务发现：/.well-known/carddav 重定向到 principal。
-    // macOS 通讯录取第一个地址簿，引导到"全部"单簿入口；iOS 用多分类入口。
-    // 两端 UA 都含 com.apple.AddressBook，只用 Mac OS X / Macintosh 判定 macOS。
+    // 服务发现：/.well-known/carddav 统一重定向到 principal /cn/。
+    // 具体返回多分类簿还是合并簿，由 principal 根据登录账号（cn / mac）决定，
+    // 不依赖 User-Agent（Apple 两端 UA 重叠，无法可靠区分）。
     if (url.pathname === "/.well-known/carddav" || url.pathname === "/.well-known/carddav/") {
-      const location = isMacOSClient(request) ? "/cn/macos/" : "/cn/";
       return new Response(null, {
         status: 301,
-        headers: { Location: location },
+        headers: { Location: "/cn/" },
       });
     }
 

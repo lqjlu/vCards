@@ -85,28 +85,12 @@ describe("CardDAV Worker", () => {
     expect(response.headers.get("Location")).toBe("/cn/");
   });
 
-  test("macOS 客户端 well-known 被引导到合并簿入口", async () => {
-    const response = await call("/.well-known/carddav", {
-      headers: { "User-Agent": "AddressBook/1.0 (Mac OS X 10.15.7)" },
-    });
-    expect(response.status).toBe(301);
-    expect(response.headers.get("Location")).toBe("/cn/macos/");
-  });
-
-  test("iOS 客户端不被误判为 macOS", async () => {
-    const response = await call("/.well-known/carddav", {
-      headers: { "User-Agent": "iOS/17.0 (iPhone; CPU iPhone OS 17_0)" },
-    });
-    expect(response.headers.get("Location")).toBe("/cn/");
-  });
-
-  test("iOS 的 com.apple.AddressBook UA 不被误判（关键回归）", async () => {
-    // iOS 与 macOS Contacts 共用 com.apple.AddressBook，仅凭它不能判为 macOS
+  test("well-known 不受 UA 影响，统一到 /cn/", async () => {
     for (const ua of [
       "com.apple.AddressBook/1.0 (iOS)",
       "com.apple.AddressBook",
-      "AddressBook/1.0",
-      "Contacts/1.0",
+      "AddressBook/1.0 (Mac OS X 10.15.7)",
+      "iOS/17.0 (iPhone)",
     ]) {
       const response = await call("/.well-known/carddav", {
         headers: { "User-Agent": ua },
@@ -115,22 +99,41 @@ describe("CardDAV Worker", () => {
     }
   });
 
-  test("macOS 根 PROPFIND 的 principal 指向合并簿", async () => {
-    const response = await call("/", {
+  test("cn 账号 principal 指向多分类 home", async () => {
+    const response = await call("/cn/", {
       method: "PROPFIND",
-      headers: {
-        Authorization: authHeader,
-        "User-Agent": "Contacts/1.0 (Mac OS X 14.0)",
-      },
+      headers: { Authorization: authHeader },
     });
+    const xml = await response.text();
+    expect(xml).toContain("/cn/addressbooks/");
+    expect(xml).not.toContain("/cn/macos/");
+  });
+
+  test("mac 账号 principal 指向合并簿 home", async () => {
+    const macAuth = `Basic ${btoa("mac:testpass")}`;
+    const response = await call("/cn/", {
+      method: "PROPFIND",
+      headers: { Authorization: macAuth },
+    });
+    expect(response.status).toBe(207);
     const xml = await response.text();
     expect(xml).toContain("/cn/macos/");
   });
 
-  test("macOS home 补齐 principal 属性", async () => {
+  test("mac 账号可用同一密码通过认证", async () => {
+    const macAuth = `Basic ${btoa("mac:testpass")}`;
     const response = await call("/cn/macos/", {
       method: "PROPFIND",
-      headers: { Authorization: authHeader, Depth: "0" },
+      headers: { Authorization: macAuth, Depth: "0" },
+    });
+    expect(response.status).toBe(207);
+  });
+
+  test("macOS home 补齐 principal 属性", async () => {
+    const macAuth = `Basic ${btoa("mac:testpass")}`;
+    const response = await call("/cn/macos/", {
+      method: "PROPFIND",
+      headers: { Authorization: macAuth, Depth: "0" },
     });
     const xml = await response.text();
     expect(xml).toContain("current-user-principal");
