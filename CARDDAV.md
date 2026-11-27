@@ -47,9 +47,15 @@ npx wrangler secret put CARDDAV_PASS
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `CARDDAV_USER` | `cn` | Basic Auth 用户名 |
-| `CARDDAV_PASS` | `cn` | Basic Auth 密码，务必修改 |
+| `CARDDAV_USER` | `cn` | 初始 CardDAV 账户名（仅首次初始化用，之后在管理页增删改） |
+| `CARDDAV_PASS` | `cn` | 初始密码；也在未配置 ADMIN_* 时作为后台登录密码 |
+| `ADMIN_USER` | 同 `CARDDAV_USER` | 后台管理页登录用户名（在 Cloudflare secrets 里定义/修改） |
+| `ADMIN_PASS` | 同 `CARDDAV_PASS` | 后台管理页登录密码（在 Cloudflare secrets 里定义/修改） |
 | `ALLOW_ANONYMOUS` | `false` | 设为 `true` 可关闭认证，不建议 |
+
+后台管理员账号独立于 CardDAV 账户：在 Cloudflare Workers 的「设置 → 变量和机密」里设置
+`ADMIN_USER` / `ADMIN_PASS`（`npx wrangler secret put ADMIN_USER`）即可修改后台登录凭据，
+改完旧会话自动失效。要改手机/电脑的 CardDAV 账号密码，则进管理页的「账号管理」。
 
 ### 4. 绑定自定义域名
 
@@ -120,6 +126,16 @@ workflow 会自动把 `CARDDAV_PASS` 写入 Worker secret（每次部署时同�
 > **为什么要用 `mac` 账号**：macOS 通讯录每个账户只同步第一个地址簿，无法像 iOS 那样管理 20 个分类。
 > 服务端用账号区分：`cn` 返回 20 个分类簿，`mac` 返回单个"全部"合并簿（321 人）。
 > 不能靠设备类型（User-Agent）自动判断——iOS 和 macOS 的通讯录 UA 完全相同，会互相误判。
+
+### 账号说明
+
+CardDAV 账户在管理页「账号管理」里增删改，每个账户可指定类型：
+
+- **iOS（多分类簿）**：看到 20 个分类地址簿，适合 iPhone
+- **macOS（合并簿）**：看到单个"全部"地址簿，适合 Mac（Apple 通讯录一个账户只同步第一个簿）
+
+初始默认有 `cn`（iOS）和 `mac`（macOS）两个账户，密码都是 `CARDDAV_PASS`。
+可以在管理页改名、改密码、换类型、新增或删除。
 
 ### 在手机上直接修改 / 新增联系人
 

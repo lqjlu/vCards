@@ -4,5 +4,7 @@ export interface Env {
   DB?: D1Database;
   CARDDAV_USER?: string;
   CARDDAV_PASS?: string;
+  ADMIN_USER?: string;
+  ADMIN_PASS?: string;
   ALLOW_ANONYMOUS?: string;
 }

@@ -53,19 +53,21 @@ const parseCookies = (request: Request): Map<string, string> => {
 export const checkCredentials = (
   username: string,
   password: string,
-  env: { CARDDAV_USER?: string; CARDDAV_PASS?: string },
+  env: { CARDDAV_USER?: string; CARDDAV_PASS?: string; ADMIN_USER?: string; ADMIN_PASS?: string },
 ): boolean => {
-  const expectUser = env.CARDDAV_USER || "cn";
-  const expectPass = env.CARDDAV_PASS || "cn";
+  // 后台管理员账号：优先用 Cloudflare 里配置的 ADMIN_USER/ADMIN_PASS，
+  // 未配置时回退到 CARDDAV_USER/CARDDAV_PASS（向后兼容）
+  const expectUser = env.ADMIN_USER || env.CARDDAV_USER || "cn";
+  const expectPass = env.ADMIN_PASS || env.CARDDAV_PASS || "cn";
   return username === expectUser && password === expectPass;
 };
 
 /** 签发会话 token */
 export const issueToken = async (
   username: string,
-  env: { CARDDAV_PASS?: string },
+  env: { CARDDAV_PASS?: string; ADMIN_PASS?: string },
 ): Promise<string> => {
-  const secret = env.CARDDAV_PASS || "cn";
+  const secret = env.ADMIN_PASS || env.CARDDAV_PASS || "cn";
   const expires = Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000;
   const payload = base64url(JSON.stringify({ u: username, e: expires }));
   const signature = await sign(payload, secret);
@@ -75,12 +77,12 @@ export const issueToken = async (
 /** 校验会话 token 是否有效 */
 export const verifyToken = async (
   token: string | undefined,
-  env: { CARDDAV_USER?: string; CARDDAV_PASS?: string },
+  env: { CARDDAV_USER?: string; CARDDAV_PASS?: string; ADMIN_USER?: string; ADMIN_PASS?: string },
 ): Promise<boolean> => {
   if (!token) return false;
   const [payload, signature] = token.split(".");
   if (!payload || !signature) return false;
-  const secret = env.CARDDAV_PASS || "cn";
+  const secret = env.ADMIN_PASS || env.CARDDAV_PASS || "cn";
   const expected = await sign(payload, secret);
   if (signature.length !== expected.length) return false;
   let diff = 0;
@@ -88,7 +90,7 @@ export const verifyToken = async (
   if (diff !== 0) return false;
   try {
     const data = JSON.parse(fromBase64url(payload)) as { u?: string; e?: number };
-    if (data.u !== (env.CARDDAV_USER || "cn")) return false;
+    if (data.u !== (env.ADMIN_USER || env.CARDDAV_USER || "cn")) return false;
     return typeof data.e === "number" && data.e > Date.now();
   } catch {
     return false;
@@ -98,7 +100,13 @@ export const verifyToken = async (
 /** 管理页请求是否已认证：Cookie token 或 Basic Auth 均可 */
 export const isAdminAuthenticated = async (
   request: Request,
-  env: { CARDDAV_USER?: string; CARDDAV_PASS?: string; ALLOW_ANONYMOUS?: string },
+  env: {
+    CARDDAV_USER?: string;
+    CARDDAV_PASS?: string;
+    ADMIN_USER?: string;
+    ADMIN_PASS?: string;
+    ALLOW_ANONYMOUS?: string;
+  },
 ): Promise<boolean> => {
   if (env.ALLOW_ANONYMOUS === "true") return true;
 

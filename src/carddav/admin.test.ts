@@ -37,6 +37,7 @@ class MockD1 {
   extras: Array<{ id: string; uid: string; book_id: string; vcard: string; etag: string }> = [];
   tombstones = new Set<string>();
   customBooks: Array<{ id: string; name: string; display_name: string }> = [];
+  accounts: Array<{ username: string; password_hash: string; platform: string }> = [];
 
   prepare(sql: string) {
     return {
@@ -63,12 +64,25 @@ class MockD1 {
       this.extras = this.extras.filter((e) => e.uid !== args[0]);
     } else if (sql.startsWith("INSERT INTO custom_books")) {
       this.customBooks.push({ id: args[0] as string, name: args[1] as string, display_name: args[2] as string });
+    } else if (sql.startsWith("INSERT INTO dav_accounts") || sql.startsWith("INSERT OR IGNORE INTO dav_accounts")) {
+      const username = args[0] as string;
+      this.accounts = this.accounts.filter((a) => a.username !== username);
+      this.accounts.push({ username, password_hash: args[1] as string, platform: args[2] as string });
+    } else if (sql.startsWith("UPDATE dav_accounts SET username")) {
+      const acc = this.accounts.find((a) => a.username === args[2]);
+      if (acc) { acc.username = args[0] as string; acc.platform = args[1] as string; }
+    } else if (sql.startsWith("DELETE FROM dav_accounts")) {
+      this.accounts = this.accounts.filter((a) => a.username !== args[0]);
     }
     return { success: true };
   }
   private first(sql: string, args: unknown[]) {
     if (sql.includes("FROM meta WHERE key = 'version'")) return { value: String(this.meta.version) };
     if (sql.includes("SELECT 1 FROM extra_contacts WHERE uid")) return this.extras.some((e) => e.uid === args[0]) ? { 1: 1 } : null;
+    if (sql.includes("COUNT(*) AS n FROM dav_accounts")) return { n: this.accounts.length };
+    if (sql.includes("SELECT username FROM dav_accounts WHERE username")) {
+      return this.accounts.find((a) => a.username === args[0]) ?? null;
+    }
     return null;
   }
   async batch(statements: Array<{ run: () => Promise<unknown> }>) {
@@ -80,6 +94,7 @@ class MockD1 {
     if (sql.includes("FROM extra_contacts")) return { results: this.extras };
     if (sql.includes("FROM tombstones")) return { results: [...this.tombstones].map((uid) => ({ uid })) };
     if (sql.includes("FROM custom_books")) return { results: this.customBooks };
+    if (sql.includes("FROM dav_accounts")) return { results: this.accounts };
     return { results: [] };
   }
 }
@@ -287,6 +302,73 @@ describe("管理界面与 API", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ uid: victim.uid }),
+    });
+  });
+
+  test("账户管理：列出默认账户（cn=ios, mac=macos）", async () => {
+    const res = await call("/admin/api/accounts");
+    expect(res.status).toBe(200);
+    const data = await res.json() as { accounts: Array<{ username: string; platform: string }> };
+    expect(data.accounts.find((a) => a.username === "cn")?.platform).toBe("ios");
+    expect(data.accounts.find((a) => a.username === "mac")?.platform).toBe("macos");
+    expect(data.accounts.every((a) => !("password_hash" in a))).toBe(true);
+  });
+
+  test("账户管理：新增 macos 账户并可用于 CardDAV 认证与分流", async () => {
+    await call("/admin/api/accounts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "laptop", password: "newpass", platform: "macos" }),
+    });
+    // 新账户认证成功
+    const basic = `Basic ${btoa("laptop:newpass")}`;
+    const principal = await worker.fetch(new Request("https://card.example.com/cn/", {
+      method: "PROPFIND",
+      headers: { Authorization: basic },
+    }), env, {} as ExecutionContext);
+    expect(principal.status).toBe(207);
+    expect(await principal.text()).toContain("/cn/macos/");
+    // 错误密码拒绝
+    const bad = await worker.fetch(new Request("https://card.example.com/cn/", {
+      method: "PROPFIND",
+      headers: { Authorization: `Basic ${btoa("laptop:wrong")}` },
+    }), env, {} as ExecutionContext);
+    expect(bad.status).toBe(401);
+    // 清理
+    await call("/admin/api/accounts", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "laptop" }),
+    });
+  });
+
+  test("账户管理：可修改密码后旧密码失效", async () => {
+    await call("/admin/api/accounts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "tempuser", password: "pass1", platform: "ios" }),
+    });
+    const oldAuth = `Basic ${btoa("tempuser:pass1")}`;
+    expect((await worker.fetch(new Request("https://card.example.com/cn/", {
+      method: "PROPFIND", headers: { Authorization: oldAuth },
+    }), env, {} as ExecutionContext)).status).toBe(207);
+
+    await call("/admin/api/accounts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "tempuser", password: "pass2", platform: "ios" }),
+    });
+    expect((await worker.fetch(new Request("https://card.example.com/cn/", {
+      method: "PROPFIND", headers: { Authorization: oldAuth },
+    }), env, {} as ExecutionContext)).status).toBe(401);
+    expect((await worker.fetch(new Request("https://card.example.com/cn/", {
+      method: "PROPFIND", headers: { Authorization: `Basic ${btoa("tempuser:pass2")}` },
+    }), env, {} as ExecutionContext)).status).toBe(207);
+
+    await call("/admin/api/accounts", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "tempuser" }),
     });
   });
 });

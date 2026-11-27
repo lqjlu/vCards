@@ -28,9 +28,11 @@ import {
 import { ADMIN_HTML, LOGIN_HTML } from "./admin-ui";
 import {
   applyOverrides,
+  hashPassword,
   loadUserState,
   mergedCtag,
   mergedEtag,
+  type DavAccountRow,
   type UserState,
 } from "./store";
 
@@ -113,56 +115,60 @@ const timingSafeEqual = (a: string, b: string): boolean => {
   return diff === 0;
 };
 
-/**
- * macOS 通讯录每个账户只取 home 中第一个地址簿，无法像 iOS 那样管理 20 个分类。
- * 因此提供两个等价账号（同一密码）：
- *   - CARDDAV_USER（默认 cn）：多分类地址簿，iOS 用
- *   - CARDDAV_MAC_USER（默认 mac）：单个"全部"合并簿，macOS 用
- * 用账号而非 UA 区分，彻底避开 Apple 两端 UA 重叠的问题。
- */
-const MAC_USER = "mac";
-
-/** 从 Basic Auth 解析用户名，未认证返回 null */
-const getBasicUser = (request: Request): string | null => {
+/** 从 Basic Auth 解析出用户名与密码 */
+const parseBasic = (request: Request): { username: string; password: string } | null => {
   const header = request.headers.get("Authorization");
   if (!header?.startsWith("Basic ")) return null;
   try {
     const decoded = atob(header.slice(6));
     const separator = decoded.indexOf(":");
-    return separator < 0 ? null : decoded.slice(0, separator);
+    if (separator < 0) return null;
+    return { username: decoded.slice(0, separator), password: decoded.slice(separator + 1) };
   } catch {
     return null;
   }
 };
 
-const checkAuth = (request: Request, env: Env): Response | null => {
-  if (env.ALLOW_ANONYMOUS === "true") return null;
-
-  const header = request.headers.get("Authorization");
-  if (!header?.startsWith("Basic ")) return unauthorized("vCards");
-
-  let decoded: string;
-  try {
-    decoded = atob(header.slice(6));
-  } catch {
-    return unauthorized("vCards");
+/**
+ * CardDAV 认证：查 state.accounts（R2 镜像，快），不再硬编码 cn/mac。
+ * 返回匹配到的账户（含 platform），供 principal 分流使用。
+ */
+const checkAuth = async (
+  request: Request,
+  env: Env,
+  state: UserState,
+): Promise<{ account: DavAccountRow } | { error: Response }> => {
+  if (env.ALLOW_ANONYMOUS === "true") {
+    return { account: { username: "", password_hash: "", platform: "ios" } };
   }
-  const separator = decoded.indexOf(":");
-  if (separator < 0) return unauthorized("vCards");
 
-  const username = decoded.slice(0, separator);
-  const password = decoded.slice(separator + 1);
+  const basic = parseBasic(request);
+  if (!basic) return { error: unauthorized("vCards") };
+
+  const account = state.accounts.find((a) => timingSafeEqual(a.username, basic.username));
+  if (account) {
+    if (!timingSafeEqual(account.password_hash, hashPassword(basic.password))) {
+      return { error: unauthorized("vCards") };
+    }
+    return { account };
+  }
+
+  // 回退：账户表为空（无 DB 或迁移未就绪）时用 env 认证，保持兼容
   const expectUser = env.CARDDAV_USER || "cn";
   const expectPass = env.CARDDAV_PASS || "cn";
-
-  // cn 与 mac 两个账号共用密码；mac 账号固定，不受 CARDDAV_USER 影响
   const validUser =
-    timingSafeEqual(username, expectUser) ||
-    (expectUser !== MAC_USER && timingSafeEqual(username, MAC_USER));
-  if (!validUser || !timingSafeEqual(password, expectPass)) {
-    return unauthorized("vCards");
+    timingSafeEqual(basic.username, expectUser) ||
+    (expectUser !== "mac" && timingSafeEqual(basic.username, "mac"));
+  if (!validUser || !timingSafeEqual(basic.password, expectPass)) {
+    return { error: unauthorized("vCards") };
   }
-  return null;
+  return {
+    account: {
+      username: basic.username,
+      password_hash: "",
+      platform: basic.username === "mac" ? "macos" : "ios",
+    },
+  };
 };
 
 /** 去掉首尾斜杠，统一为不含尾斜杠的路径 */
@@ -492,17 +498,20 @@ const handleRootPropfind = (request: Request): Response => {
   return multistatus([responseBlock(base + "/", props)]);
 };
 
-/** PROPFIND /cn：principal 资源。按账号返回不同的地址簿 home */
-const handlePrincipalPropfind = (request: Request, env: Env): Response => {
+/** PROPFIND /cn：principal 资源。按账号的 platform 返回不同的地址簿 home */
+const handlePrincipalPropfind = (request: Request, env: Env, state: UserState): Response => {
   const base = baseUrl(request);
   const principalHref = base + pathFor("cn") + "/";
-  const username = getBasicUser(request);
-  const isMacAccount = username === MAC_USER;
-  const expectUser = env.CARDDAV_USER || "cn";
-  const homePath = isMacAccount ? pathFor("macos") : pathFor("addressbooks");
+  const basic = parseBasic(request);
+  const username = basic?.username ?? env.CARDDAV_USER ?? "cn";
+  const account = state.accounts.find((a) => a.username === username);
+  const isMac = account
+    ? account.platform === "macos"
+    : username === "mac" && state.accounts.length === 0; // 回退模式
+  const homePath = isMac ? pathFor("macos") : pathFor("addressbooks");
   const props =
     resourcetype("collection", "principal") +
-    `<D:displayname>${xmlEscape(username ?? expectUser)}</D:displayname>` +
+    `<D:displayname>${xmlEscape(username)}</D:displayname>` +
     `<C:addressbook-home-set><D:href>${xmlEscape(base + homePath + "/")}</D:href></C:addressbook-home-set>` +
     `<D:principal-URL><D:href>${xmlEscape(principalHref)}</D:href></D:principal-URL>`;
   return multistatus([responseBlock(principalHref, props)]);
@@ -637,7 +646,7 @@ const handlePropfind = async (request: Request, env: Env, state: UserState): Pro
     case "root":
       return handleRootPropfind(request);
     case "principal":
-      return handlePrincipalPropfind(request, env);
+      return handlePrincipalPropfind(request, env, state);
     case "home":
       return handleHomePropfind(request, env, route.mode, depth, state);
     case "book":
@@ -875,11 +884,10 @@ export default {
       return await handleAdminApi(request, env, url.pathname);
     }
 
-    // ---- CardDAV：仍用 Basic Auth，保持 iOS/macOS 客户端兼容 ----
-    const authError = checkAuth(request, env);
-    if (authError) return authError;
-
+    // ---- CardDAV：Basic Auth，账户从 D1/R2 镜像读取 ----
     const state = await loadUserState(env);
+    const auth = await checkAuth(request, env, state);
+    if ("error" in auth) return auth.error;
 
     try {
       switch (method) {

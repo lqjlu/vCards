@@ -7,7 +7,12 @@
 
 import { createHash } from "node:crypto";
 import { buildVCard, parseVCard, type FieldOverride } from "./merge";
-import { bumpVersion, loadUserState } from "./store";
+import {
+  bumpVersion,
+  hashPassword,
+  loadUserState,
+  type AccountPlatform,
+} from "./store";
 import type { Env } from "./worker-types";
 import type { BookData, Catalog } from "./types";
 
@@ -273,6 +278,82 @@ const restoreContact = async (request: Request, env: Env): Promise<Response> => 
   return json({ ok: true, version });
 };
 
+/** 列出 CardDAV 账户（不返回密码哈希） */
+const listAccounts = async (env: Env): Promise<Response> => {
+  const state = await loadUserState(env);
+  return json({
+    accounts: state.accounts.map((a) => ({
+      username: a.username,
+      platform: a.platform,
+    })),
+  });
+};
+
+/** 新增或更新账户。password 留空表示保持原密码 */
+const saveAccount = async (request: Request, env: Env): Promise<Response> => {
+  if (!env.DB) return json({ error: "D1 未绑定" }, 500);
+  const body = (await request.json()) as {
+    username?: string;
+    password?: string;
+    platform?: string;
+    originalUsername?: string;
+  };
+  const username = body.username?.trim();
+  if (!username) return json({ error: "缺少用户名" }, 400);
+  const platform: AccountPlatform = body.platform === "macos" ? "macos" : "ios";
+  const original = body.originalUsername?.trim() || username;
+  const db = env.DB;
+
+  // 检查目标用户名是否已存在（改名时排除自己）
+  const existing = await db
+    .prepare("SELECT username FROM dav_accounts WHERE username = ?")
+    .bind(username)
+    .first<{ username: string }>();
+  if (existing && existing.username !== original) {
+    return json({ error: "用户名已存在" }, 409);
+  }
+
+  const batch: D1PreparedStatement[] = [];
+  if (body.password) {
+    // 提供了新密码：整条更新
+    batch.push(
+      db
+        .prepare(
+          "INSERT INTO dav_accounts (username, password_hash, platform, created_at) VALUES (?, ?, ?, ?) " +
+            "ON CONFLICT(username) DO UPDATE SET password_hash = excluded.password_hash, platform = excluded.platform",
+        )
+        .bind(username, hashPassword(body.password), platform, new Date().toISOString()),
+    );
+  } else {
+    // 未改密码：只更新用户名与平台
+    batch.push(
+      db
+        .prepare("UPDATE dav_accounts SET username = ?, platform = ? WHERE username = ?")
+        .bind(username, platform, original),
+    );
+  }
+  if (username !== original) {
+    batch.push(db.prepare("DELETE FROM dav_accounts WHERE username = ?").bind(original));
+  }
+  await db.batch(batch);
+  const version = await bumpVersion(env);
+  return json({ ok: true, version });
+};
+
+/** 删除账户（至少保留一个） */
+const deleteAccount = async (request: Request, env: Env): Promise<Response> => {
+  if (!env.DB) return json({ error: "D1 未绑定" }, 500);
+  const body = (await request.json()) as { username?: string };
+  const username = body.username?.trim();
+  if (!username) return json({ error: "缺少用户名" }, 400);
+  const db = env.DB;
+  const count = await db.prepare("SELECT COUNT(*) AS n FROM dav_accounts").first<{ n: number }>();
+  if ((count?.n ?? 0) <= 1) return json({ error: "至少保留一个账户" }, 400);
+  await db.prepare("DELETE FROM dav_accounts WHERE username = ?").bind(username).run();
+  const version = await bumpVersion(env);
+  return json({ ok: true, version });
+};
+
 export const handleAdminApi = async (request: Request, env: Env, path: string): Promise<Response> => {
   const method = request.method.toUpperCase();
   if (path === "/admin/api/contacts" && method === "GET") return listContacts(env);
@@ -281,6 +362,9 @@ export const handleAdminApi = async (request: Request, env: Env, path: string): 
   if (path === "/admin/api/contact" && method === "DELETE") return deleteContact(request, env);
   if (path === "/admin/api/restore" && method === "POST") return restoreContact(request, env);
   if (path === "/admin/api/books" && method === "GET") return listBooks(env);
+  if (path === "/admin/api/accounts" && method === "GET") return listAccounts(env);
+  if (path === "/admin/api/accounts" && method === "POST") return saveAccount(request, env);
+  if (path === "/admin/api/accounts" && method === "DELETE") return deleteAccount(request, env);
   return json({ error: "Not Found" }, 404);
 };
 

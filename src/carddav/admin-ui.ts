@@ -126,6 +126,10 @@ label{color:var(--muted);font-size:12px}
 </div>
 <div class="side-label">分类浏览</div>
 <div id="cats" class="cats"></div>
+<div class="side-label">系统</div>
+<button type="button" class="cat" onclick="openAccounts()" style="width:100%;text-align:left">
+<span class="cat-dot"></span><span class="cat-name">账号管理</span>
+</button>
 <div class="side-foot">
 <span id="ver" class="side-ver"></span>
 <button type="button" class="side-refresh" onclick="location.reload()">刷新数据</button>
@@ -147,6 +151,17 @@ label{color:var(--muted);font-size:12px}
 </header>
 <main class="content">
 <div id="msg" class="msg"></div>
+<section id="accountPanel" class="panel" style="display:none;margin-bottom:18px">
+<div class="panel-head"><div><h2>账号管理</h2><p class="panel-sub">管理 CardDAV 登录账号，iOS 用多分类簿，macOS 用合并簿</p></div><button type="button" class="btn small" onclick="closeAccounts()">关闭</button></div>
+<div id="accountList" class="list" style="margin-top:12px"></div>
+<form class="inline" style="margin-top:12px" onsubmit="saveAccount(event)">
+<input id="accUser" placeholder="用户名" required>
+<input id="accPass" placeholder="密码（留空=不改）">
+<select id="accPlatform"><option value="ios">iOS（多分类簿）</option><option value="macos">macOS（合并簿）</option></select>
+<input id="accOriginal" type="hidden">
+<button type="submit" class="btn primary">保存账号</button>
+</form>
+</section>
 <section class="metrics">
 <div class="metric"><div class="label">联系人总数</div><div class="value" id="metricTotal">0</div></div>
 <div class="metric highlight"><div class="label">当前显示</div><div class="value" id="metricShown">0</div></div>
@@ -193,6 +208,37 @@ function closeDetail(){$('detail').style.display='none'}
 function closeEditor(){$('editor').style.display='none'}
 function closeNew(){$('newPanel').style.display='none'}
 async function api(path,opts={}){const r=await fetch(path,opts);const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||('HTTP '+r.status));return j}
+function openAccounts(){$('accountPanel').style.display='block';loadAccounts();$('accountPanel').scrollIntoView({behavior:'smooth',block:'nearest'})}
+function closeAccounts(){$('accountPanel').style.display='none'}
+async function loadAccounts(){
+try{
+const data=await api('/admin/api/accounts');
+const html=(data.accounts||[]).map(a=>'<div class="drow"><span class="dk">'+esc(a.username)+'</span>'+
+'<span class="dv">'+(a.platform==='macos'?'macOS 合并簿':'iOS 多分类簿')+'</span>'+
+'<button type="button" class="btn small" onclick="editAccount(\\''+enc(a.username)+'\\',\\''+esc(a.platform)+'\\')">编辑</button>'+
+'<button type="button" class="btn small danger" onclick="delAccount(\\''+enc(a.username)+'\\')">删除</button></div>').join('');
+$('accountList').innerHTML=html||'<p class="panel-sub">暂无账号</p>';
+}catch(e){notify('加载账号失败：'+e.message,false)}
+}
+function editAccount(username,platform){$('accUser').value=decodeURIComponent(username);$('accOriginal').value=decodeURIComponent(username);$('accPass').value='';$('accPlatform').value=platform;$('accUser').focus()}
+async function saveAccount(ev){
+ev.preventDefault();
+const username=$('accUser').value.trim();if(!username)return;
+const payload={username,platform:$('accPlatform').value};
+if($('accOriginal').value)payload.originalUsername=$('accOriginal').value;
+if($('accPass').value)payload.password=$('accPass').value;
+try{
+const r=await api('/admin/api/accounts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+notify('账号已保存，数据版本 v'+r.version);$('accUser').value='';$('accPass').value='';$('accOriginal').value='';await loadAccounts();
+}catch(e){notify('保存失败：'+e.message,false)}
+}
+async function delAccount(username){
+if(!confirm('确定删除账号「'+decodeURIComponent(username)+'」？使用该账号的设备需重新配置。'))return;
+try{
+const r=await api('/admin/api/accounts',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:decodeURIComponent(username)})});
+notify('账号已删除，数据版本 v'+r.version);await loadAccounts();
+}catch(e){notify('删除失败：'+e.message,false)}
+}
 async function load(){
 try{
 DATA=await api('/admin/api/contacts');

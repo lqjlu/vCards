@@ -42,3 +42,11 @@ CREATE TABLE IF NOT EXISTS custom_books (
   display_name TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+
+-- CardDAV 账户：可在管理页增删改，platform 决定走多分类簿(ios)还是合并簿(macos)
+CREATE TABLE IF NOT EXISTS dav_accounts (
+  username TEXT PRIMARY KEY,
+  password_hash TEXT NOT NULL,
+  platform TEXT NOT NULL DEFAULT 'ios',
+  created_at TEXT NOT NULL
+);

@@ -7,8 +7,22 @@
  * 读路径只读 R2，D1 仅作为写入源与回源兜底。
  */
 
+import { createHash } from "node:crypto";
 import { mergeVCard } from "./merge";
 import type { Env } from "./worker-types";
+
+/** CardDAV 账户：platform 决定客户端看到多分类簿(ios)还是合并簿(macos) */
+export interface DavAccountRow {
+  username: string;
+  password_hash: string;
+  platform: "ios" | "macos";
+}
+
+export type AccountPlatform = "ios" | "macos";
+
+/** 密码哈希（自用黄页，SHA-256 足够；存 hash 避免明文落库） */
+export const hashPassword = (password: string): string =>
+  createHash("sha256").update(`vcards:${password}`).digest("hex");
 
 export interface FieldOverrideRow {
   uid: string;
@@ -41,6 +55,7 @@ export interface UserState {
   extraByBook: Map<string, ExtraContactRow[]>;
   tombstones: Set<string>;
   customBooks: CustomBookRow[];
+  accounts: DavAccountRow[];
 }
 
 export const EMPTY_STATE: UserState = {
@@ -50,6 +65,7 @@ export const EMPTY_STATE: UserState = {
   extraByBook: new Map(),
   tombstones: new Set(),
   customBooks: [],
+  accounts: [],
 };
 
 /** 覆盖层状态在 R2 中的镜像对象（读路径只碰它，不查 D1） */
@@ -61,6 +77,7 @@ type SerializedState = {
   extraContacts: ExtraContactRow[];
   tombstones: string[];
   customBooks: CustomBookRow[];
+  accounts: DavAccountRow[];
 };
 
 const serializeState = (s: UserState): SerializedState => ({
@@ -71,6 +88,7 @@ const serializeState = (s: UserState): SerializedState => ({
   extraContacts: s.extraContacts,
   tombstones: [...s.tombstones],
   customBooks: s.customBooks,
+  accounts: s.accounts ?? [],
 });
 
 const deserializeState = (s: SerializedState): UserState => {
@@ -93,6 +111,7 @@ const deserializeState = (s: SerializedState): UserState => {
     extraByBook,
     tombstones: new Set(s.tombstones),
     customBooks: s.customBooks,
+    accounts: s.accounts ?? [],
   };
 };
 
@@ -132,12 +151,13 @@ export const invalidateUserState = (): void => {
 
 /** 从 D1 回源整份覆盖层（慢路径，仅写操作或 R2 未就绪时触发） */
 const readStateFromD1 = async (db: D1Database): Promise<UserState> => {
-  const [meta, overrideRows, extraRows, tombRows, bookRows] = await Promise.all([
+  const [meta, overrideRows, extraRows, tombRows, bookRows, accountRows] = await Promise.all([
     db.prepare("SELECT value FROM meta WHERE key = 'version'").first<{ value: string }>(),
     db.prepare("SELECT uid, field_key, value FROM overrides").all<FieldOverrideRow>(),
     db.prepare("SELECT id, uid, book_id, vcard, etag FROM extra_contacts").all<ExtraContactRow>(),
     db.prepare("SELECT uid FROM tombstones").all<TombstoneRow>(),
     db.prepare("SELECT id, name, display_name FROM custom_books").all<CustomBookRow>(),
+    db.prepare("SELECT username, password_hash, platform FROM dav_accounts").all<DavAccountRow>(),
   ]);
 
   const overrides = new Map<string, Array<{ key: string; value: string | null }>>();
@@ -162,7 +182,37 @@ const readStateFromD1 = async (db: D1Database): Promise<UserState> => {
     extraByBook,
     tombstones: new Set((tombRows.results ?? []).map((r) => r.uid)),
     customBooks: bookRows.results ?? [],
+    accounts: accountRows.results ?? [],
   };
+};
+
+/**
+ * 确保账户表有默认账户（迁移用）。
+ * 首次运行时把 env 里的 CARDDAV_USER/CARDDAV_PASS 初始化为 ios 账户，
+ * 并额外建一个 mac 账户（同密码、macos 平台），保持升级前行为。
+ */
+export const ensureDefaultAccounts = async (db: D1Database, env: Env): Promise<void> => {
+  const existing = await db.prepare("SELECT COUNT(*) AS n FROM dav_accounts").first<{ n: number }>();
+  if ((existing?.n ?? 0) > 0) return;
+
+  const password = env.CARDDAV_PASS || "cn";
+  const hash = hashPassword(password);
+  const mainUser = env.CARDDAV_USER || "cn";
+  const now = new Date().toISOString();
+  const batch: D1PreparedStatement[] = [];
+  batch.push(
+    db
+      .prepare("INSERT OR IGNORE INTO dav_accounts (username, password_hash, platform, created_at) VALUES (?, ?, ?, ?)")
+      .bind(mainUser, hash, "ios", now),
+  );
+  if (mainUser !== "mac") {
+    batch.push(
+      db
+        .prepare("INSERT OR IGNORE INTO dav_accounts (username, password_hash, platform, created_at) VALUES (?, ?, ?, ?)")
+        .bind("mac", hash, "macos", now),
+    );
+  }
+  await db.batch(batch);
 };
 
 /**
@@ -181,13 +231,18 @@ export const loadUserState = async (env: Env): Promise<UserState> => {
     const object = await env.R2.get(STATE_R2_KEY);
     if (object) {
       const state = deserializeState((await object.json()) as SerializedState);
-      userStateCache = { state, expires: now + USER_STATE_TTL };
-      return state;
+      // 旧版镜像不含账户：回源 D1 重建（含默认账户迁移）
+      if (state.accounts.length > 0) {
+        userStateCache = { state, expires: now + USER_STATE_TTL };
+        return state;
+      }
     }
   } catch {
     // R2 读取失败则回源 D1
   }
 
+  // 回源 D1：先确保默认账户存在（迁移），再读全量状态
+  await ensureDefaultAccounts(db, env);
   const state = await readStateFromD1(db);
   await writeCaches(env, state);
   return state;
