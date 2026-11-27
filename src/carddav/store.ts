@@ -192,6 +192,14 @@ const readStateFromD1 = async (db: D1Database): Promise<UserState> => {
  * 并额外建一个 mac 账户（同密码、macos 平台），保持升级前行为。
  */
 export const ensureDefaultAccounts = async (db: D1Database, env: Env): Promise<void> => {
+  // 自愈建表：D1 的 DDL 可通过 binding 执行，避免每次改动都要手动跑 schema
+  await db
+    .prepare(
+      "CREATE TABLE IF NOT EXISTS dav_accounts (" +
+        "username TEXT PRIMARY KEY, password_hash TEXT NOT NULL, " +
+        "platform TEXT NOT NULL DEFAULT 'ios', created_at TEXT NOT NULL)",
+    )
+    .run();
   const existing = await db.prepare("SELECT COUNT(*) AS n FROM dav_accounts").first<{ n: number }>();
   if ((existing?.n ?? 0) > 0) return;
 
