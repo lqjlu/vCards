@@ -6,7 +6,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { buildVCard, parseVCard, type FieldOverride } from "./merge";
+import { buildVCard, fieldName, parseVCard, stripGroup, type FieldOverride } from "./merge";
 import {
   bumpVersion,
   hashPassword,
@@ -49,6 +49,49 @@ const findBaseContact = async (env: Env, uid: string): Promise<{ bookId: string;
   return null;
 };
 
+/** 合并基线与覆盖层，产出管理页展示用的字段列表（与 mergeVCard 的判定保持一致） */
+const buildAdminFields = (
+  vcard: string,
+  overrides: Array<{ key: string; value: string | null }>,
+): Array<{ key: string; label: string; value: string; edited: boolean }> => {
+  const baseFields = parseVCard(vcard);
+  const baseKeys = new Set(baseFields.map((f) => f.key));
+  const overrideMap = new Map(overrides.map((o) => [o.key, o.value]));
+  const fields = baseFields.map((f) => ({
+    key: f.key,
+    // 去掉 item1. 分组前缀，否则前端 ^TEL 判断不到，列表里会显示“没有号码”
+    label: stripGroup(f.baseKey),
+    value: overrideMap.has(f.key) ? (overrideMap.get(f.key) ?? "") : f.value,
+    edited: overrideMap.has(f.key),
+  }));
+
+  for (const o of overrides) {
+    if (o.value === null) continue;
+    if (o.key.startsWith("+")) {
+      fields.push({
+        key: o.key,
+        label: stripGroup(o.key.slice(1).replace(/~\d+$/, "")),
+        value: o.value,
+        edited: true,
+      });
+      continue;
+    }
+    // 基线里没有的序号 key：旧版本把“客户端新增字段”存成了基线序号，这里补回来
+    if (baseKeys.has(o.key)) continue;
+    const storedKey = o.key.replace(/#\d+$/, "");
+    const name = fieldName(storedKey);
+    if (baseFields.some((f) => f.name === name && f.value === o.value)) continue;
+    fields.push({
+      key: o.key,
+      label: stripGroup(storedKey),
+      value: o.value,
+      edited: true,
+    });
+  }
+
+  return fields;
+};
+
 /** 获取合并后的联系人列表（网页主列表） */
 const listContacts = async (env: Env): Promise<Response> => {
   const state = await loadUserState(env);
@@ -70,49 +113,19 @@ const listContacts = async (env: Env): Promise<Response> => {
     for (const contact of data.contacts) {
       if (state.tombstones.has(contact.uid)) continue;
       const overrides = userOverrides.get(contact.uid) ?? [];
-      const overrideMap = new Map(overrides.map((o) => [o.key, o.value]));
-      const fields = parseVCard(contact.vcard).map((f) => ({
-        key: f.key,
-        label: f.baseKey,
-        value: overrideMap.has(f.key) ? (overrideMap.get(f.key) ?? "") : f.value,
-        edited: overrideMap.has(f.key),
-      }));
-      for (const o of overrides.filter((o) => o.key.startsWith("+"))) {
-        fields.push({
-          key: o.key,
-          label: o.key.slice(1).replace(/~\d+$/, ""),
-          value: o.value ?? "",
-          edited: true,
-        });
-      }
       items.push({
         uid: contact.uid,
         id: contact.id,
         name: contact.uid,
         book: book.name,
         source: "base",
-        fields,
+        fields: buildAdminFields(contact.vcard, overrides),
       });
     }
   }
 
   for (const row of state.extraContacts) {
     const overrides = userOverrides.get(row.uid) ?? [];
-    const overrideMap = new Map(overrides.map((o) => [o.key, o.value]));
-    const fields = parseVCard(row.vcard).map((f) => ({
-      key: f.key,
-      label: f.baseKey,
-      value: overrideMap.has(f.key) ? (overrideMap.get(f.key) ?? "") : f.value,
-      edited: overrideMap.has(f.key),
-    }));
-    for (const o of overrides.filter((o) => o.key.startsWith("+"))) {
-      fields.push({
-        key: o.key,
-        label: o.key.slice(1).replace(/~\d+$/, ""),
-        value: o.value ?? "",
-        edited: true,
-      });
-    }
     const custom = state.customBooks.find((b) => b.id === row.book_id);
     const baseBook = catalog.books.find((b) => b.id === row.book_id);
     items.push({
@@ -121,7 +134,7 @@ const listContacts = async (env: Env): Promise<Response> => {
       name: row.uid,
       book: custom?.name ?? baseBook?.name ?? row.book_id,
       source: "user",
-      fields,
+      fields: buildAdminFields(row.vcard, overrides),
     });
   }
 

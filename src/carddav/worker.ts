@@ -732,8 +732,29 @@ const handleOptions = (): Response =>
     },
   });
 
-/** DAV 写操作结果 → HTTP 响应（PUT/DELETE 共用） */
-const writeResult = (result: PutResult): Response => {
+/**
+ * 取联系人「未合并覆盖层」的原始 vCard。
+ * 用户新增的联系人直接取 extra_contacts；基线联系人回 R2 对应簿按 uid 查找。
+ */
+const getStoredVCard = async (
+  env: Env,
+  mode: "ios" | "macos",
+  bookId: string,
+  uid: string,
+  state: UserState,
+): Promise<string | undefined> => {
+  const extra = state.extraContacts.find(
+    (row) => row.uid === uid && (mode === "macos" || row.book_id === bookId),
+  );
+  if (extra) return extra.vcard;
+
+  const object = await env.R2.get(`books/${mode}/${bookId}.json`);
+  if (!object) return undefined;
+  const data = (await object.json()) as BookData;
+  return data.contacts.find((c) => c.uid === uid)?.vcard;
+};
+
+/** DAV 写操作结果 → HTTP 响应（PUT/DELETE 共用） */const writeResult = (result: PutResult): Response => {
   if (!result.ok) {
     return new Response(result.error ?? "写入失败", {
       status: result.status,
@@ -760,10 +781,15 @@ const handlePut = async (
     return new Response("Invalid vCard", { status: 400 });
   }
 
-  // 查找现有联系人（判断编辑还是新增；同时取基线 vCard 做字段级对比）
+  // 查找现有联系人（判断编辑还是新增；同时取原始基线 vCard 做字段级对比）
   const data = await getBookData(env, route.mode, route.bookId, state);
   const existing = data ? findContact(data, route.contactId) : null;
-  const baseVcard = existing?.vcard;
+  // 必须拿「未套用覆盖层」的原始 vCard 做基线：合并后的 vCard 会把之前新增的字段
+  // 混进基线，再次保存时就会把它们误判成基线字段而丢失。
+  const baseVcard = existing
+    ? await getStoredVCard(env, route.mode, route.bookId, existing.uid, state)
+    : undefined;
+  const overrides = existing ? state.overrides.get(existing.uid) : undefined;
 
   // If-Match 乐观并发：若客户端带了 ETag 且与当前不符，返回 412
   const ifMatch = request.headers.get("If-Match");
@@ -781,6 +807,7 @@ const handlePut = async (
     vcard,
     baseVcard,
     baseUid: existing?.uid,
+    overrides,
   });
   const response = writeResult(result);
   if (result.ok && result.status === 201 && result.id) {

@@ -415,7 +415,7 @@ x:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" s
 };
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function enc(s){return encodeURIComponent(String(s??'')).replace(/'/g,'%27')}
-function fieldName(label){const base=String(label||'').split(';')[0].toUpperCase();return FIELD_NAMES[base]||label}
+function fieldName(label){const raw=String(label||'').replace(/^[A-Za-z0-9-]+\\./,'');const base=raw.split(';')[0].toUpperCase();return FIELD_NAMES[base]||raw}
 function tintOf(s){let h=0;for(let i=0;i<String(s).length;i++)h=(h*31+String(s).charCodeAt(i))%997;return TINTS[h%TINTS.length]}
 function notify(text,ok=true){const m=$('msg');m.className='msg show '+(ok?'ok':'err');m.textContent=text;clearTimeout(notify._t);notify._t=setTimeout(()=>{m.className='msg'},3500)}
 async function api(path,opts={}){const r=await fetch(path,opts);const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||('HTTP '+r.status));return j}
@@ -535,7 +535,7 @@ $('metricBooks').textContent=BOOKS.length;
 renderCats();render();
 }catch(e){notify('加载失败：'+e.message,false)}
 }
-function tels(c){return c.fields.filter(f=>/^TEL/i.test(f.label)&&f.value&&f.value!=='__DELETED__').map(f=>f.value)}
+function tels(c){return c.fields.filter(f=>/^(?:[A-Za-z0-9-]+\\.)?TEL/i.test(f.label)&&f.value&&f.value!=='__DELETED__').map(f=>f.value)}
 function catCounts(){const m={};for(const c of DATA.contacts)m[c.book]=(m[c.book]||0)+1;return m}
 function renderCats(){
 const counts=catCounts();

@@ -289,6 +289,115 @@ describe("管理界面与 API", () => {
     expect(text).toContain("UID:" + victim.uid);
   });
 
+  test("手机新增第二个电话能同步回来，且再次 PUT 不丢失", async () => {
+    const bookId = firstBook.id;
+    const data = JSON.parse(
+      fs.readFileSync(path.join(DIST_DIR, "books", "ios", `${bookId}.json`), "utf8"),
+    ) as { contacts: Array<{ id: string; uid: string; vcard: string }> };
+    const victim = data.contacts.find(
+      (c) => c.id !== firstContact.id && /(^|\r?\n)TEL/i.test(c.vcard),
+    );
+    expect(victim).toBeTruthy();
+    const base = victim!.vcard;
+    const originalTel = base.match(/(?:^|\r?\n)TEL[^:]*:([^\r\n]+)/)?.[1] ?? "";
+    expect(originalTel).not.toBe("");
+
+    // iOS 保存时提交的是整张 vCard：原号码 + 新号码
+    const withNew = base.replace(/(\r?\n)END:VCARD/, "$1TEL;TYPE=CELL:1068306003$1END:VCARD");
+    const put1 = await call(`/cn/addressbooks/${bookId}/${victim!.id}.vcf`, {
+      method: "PUT",
+      body: withNew,
+    });
+    expect(put1.status).toBe(204);
+
+    const got = await (await call(`/cn/addressbooks/${bookId}/${victim!.id}.vcf`)).text();
+    expect(got).toContain("1068306003");
+    expect(got).toContain(originalTel);
+
+    // 下一次同步：客户端把「看到的整张 vCard」原样再 PUT 一次（最容易丢号码的场景）
+    const put2 = await call(`/cn/addressbooks/${bookId}/${victim!.id}.vcf`, {
+      method: "PUT",
+      body: got,
+    });
+    expect(put2.status).toBe(204);
+    const got2 = await (await call(`/cn/addressbooks/${bookId}/${victim!.id}.vcf`)).text();
+    expect(got2).toContain("1068306003");
+    expect(got2).toContain(originalTel);
+
+    // 管理页列表也要能看到这个号码（label 不能带 item1. 前缀）
+    const list = (await (await call("/admin/api/contacts")).json()) as {
+      contacts: Array<{ uid: string; fields: Array<{ label: string; value: string }> }>;
+    };
+    const item = list.contacts.find((c) => c.uid === victim!.uid);
+    expect(
+      item?.fields.some((f) => /(^|\.)TEL/i.test(f.label) && f.value === "1068306003"),
+    ).toBe(true);
+  });
+
+  test("客户端改写电话参数（CELL→VOICE）不会丢号码", async () => {
+    const found = (() => {
+      for (const book of catalog.books) {
+        const data = JSON.parse(
+          fs.readFileSync(path.join(DIST_DIR, "books", "ios", `${book.id}.json`), "utf8"),
+        ) as { contacts: Array<{ id: string; uid: string; vcard: string }> };
+        const contact = data.contacts.find((c) => /(^|\r?\n)TEL[^:]*:/i.test(c.vcard));
+        if (contact) return { bookId: book.id, contact };
+      }
+      return null;
+    })();
+    expect(found).toBeTruthy();
+    const { bookId, contact } = found!;
+    const originalTel = contact.vcard.match(/(?:^|\r?\n)TEL[^:]*:([^\r\n]+)/)?.[1] ?? "";
+    expect(originalTel).not.toBe("");
+
+    // iOS 有时会把「手机」改成「工作」等类型，参数变了但号码没变
+    const rewritten = contact.vcard.replace(/(^|\r?\n)TEL[^:]*:/i, "$1TEL;TYPE=VOICE:");
+    const res = await call(`/cn/addressbooks/${bookId}/${contact.id}.vcf`, {
+      method: "PUT",
+      body: rewritten,
+    });
+    expect(res.status).toBe(204);
+    const got = await (await call(`/cn/addressbooks/${bookId}/${contact.id}.vcf`)).text();
+    expect(got).toContain(originalTel);
+  });
+
+  test("旧版本写坏的孤儿覆盖（TEL#1）会自动恢复成新增号码", async () => {
+    const found = (() => {
+      for (const book of catalog.books) {
+        const data = JSON.parse(
+          fs.readFileSync(path.join(DIST_DIR, "books", "ios", `${book.id}.json`), "utf8"),
+        ) as { contacts: Array<{ id: string; uid: string; vcard: string }> };
+        const contact = data.contacts.find((c) => {
+          const count = (c.vcard.match(/(^|\r?\n)TEL;TYPE=CELL:/gi) ?? []).length;
+          return count === 1;
+        });
+        if (contact) return { bookId: book.id, contact };
+      }
+      return null;
+    })();
+    expect(found).toBeTruthy();
+    const { bookId, contact } = found!;
+    const key = `${contact.uid}|TEL;TYPE=CELL#1`;
+    d1.overrides.set(key, "1068306003");
+    try {
+      const got = await (await call(`/cn/addressbooks/${bookId}/${contact.id}.vcf`)).text();
+      expect(got).toContain("1068306003");
+      // 原号码仍然在
+      expect(got).toContain(contact.vcard.match(/TEL;TYPE=CELL:([^\r\n]+)/)?.[1] ?? "x");
+
+      const list = (await (await call("/admin/api/contacts")).json()) as {
+        contacts: Array<{ uid: string; fields: Array<{ value: string }> }>;
+      };
+      expect(
+        list.contacts
+          .find((c) => c.uid === contact.uid)
+          ?.fields.some((f) => f.value === "1068306003"),
+      ).toBe(true);
+    } finally {
+      d1.overrides.delete(key);
+    }
+  });
+
   test("CardDAV DELETE 联系人后不再返回", async () => {
     const victim = firstContact;
     const res = await call(`/cn/addressbooks/${firstBook.id}/${victim.id}.vcf`, {

@@ -96,6 +96,42 @@ describe("mergeVCard", () => {
     const merged = mergeVCard(upstreamUpdated, [{ key: "ORG#0", value: "我的公司" }]);
     expect(merged).toContain("URL:https://new.example.com");
   });
+
+  test("历史孤儿覆盖（基线没有该序号）也输出，避免旧数据里新增号码消失", () => {
+    const merged = mergeVCard(BASE, [{ key: "TEL;TYPE=CELL#2", value: "1068306003" }]);
+    expect(merged).toContain("TEL;TYPE=CELL:1068306003");
+    expect(merged).toContain("13800000000");
+    expect(merged).toContain("13900000000");
+  });
+
+  test("孤儿覆盖与基线同值时不重复输出", () => {
+    const merged = mergeVCard(BASE, [{ key: "TEL;TYPE=CELL#2", value: "13800000000" }]);
+    expect((merged.match(/13800000000/g) ?? []).length).toBe(1);
+  });
+
+  test("item1. 分组前缀：TEL 可识别，PHOTO 仍然隐藏", () => {
+    const grouped = [
+      "BEGIN:VCARD",
+      "VERSION:3.0",
+      "FN:分组测试",
+      "UID:分组测试",
+      "item1.TEL;type=pref:95511",
+      "item1.X-ABLabel:_$!<Main>!$_",
+      "item2.PHOTO;ENCODING=b;TYPE=PNG:iVBORw0KGgo",
+      " XNSR0IB2cksfwAAA",
+      "END:VCARD",
+      "",
+    ].join("\r\n");
+    const fields = parseVCard(grouped);
+    const tel = fields.find((f) => f.name === "TEL");
+    expect(tel?.key).toBe("item1.TEL;type=pref#0");
+    expect(fields.some((f) => f.name === "PHOTO")).toBe(false);
+    // 修改号码时保留分组前缀，避免打断 item1.TEL 与 item1.X-ABLabel 的关联
+    const merged = mergeVCard(grouped, [{ key: "item1.TEL;type=pref#0", value: "1068306003" }]);
+    expect(merged).toContain("item1.TEL;type=pref:1068306003");
+    expect(merged).toContain("item2.PHOTO;ENCODING=b;TYPE=PNG:iVBORw0KGgo\n XNSR0IB2cksfwAAA");
+    expect(merged.indexOf("item2.PHOTO")).toBeLessThan(merged.indexOf("END:VCARD"));
+  });
 });
 
 describe("buildVCard", () => {
