@@ -25,6 +25,7 @@
     "src/carddav/admin-ui.ts",
     "src/carddav/store.ts",
     "src/carddav/worker-types.ts",
+    "src/carddav/dav-write.ts",
     "src/carddav/merge.ts",
     "src/carddav/merge.test.ts",
     "src/carddav/types.ts"

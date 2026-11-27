@@ -229,4 +229,64 @@ describe("管理界面与 API", () => {
     const added = list.contacts.find((c) => c.uid === "我添加的测试联系人");
     expect(added?.source).toBe("user");
   });
+
+  test("CardDAV OPTIONS 声明写权限", async () => {
+    const res = await call(`/cn/addressbooks/${firstBook.id}/`, { method: "OPTIONS" });
+    expect(res.headers.get("Allow")).toContain("PUT");
+    expect(res.headers.get("Allow")).toContain("DELETE");
+  });
+
+  test("CardDAV PUT 新增联系人写入 D1 覆盖层并出现在列表", async () => {
+    const uid = "手机新增测试";
+    const vcard = [
+      "BEGIN:VCARD", "VERSION:3.0", `UID:${uid}`, "FN:手机新增测试",
+      "TEL;TYPE=CELL:13900001111", "END:VCARD", "",
+    ].join("\r\n");
+    const res = await call(`/cn/addressbooks/${firstBook.id}/new-contact-id.vcf`, {
+      method: "PUT", body: vcard,
+    });
+    expect(res.status).toBe(201);
+    expect(res.headers.get("X-VCards-Version")).toBeTruthy();
+
+    // 用 REPORT 拉完整 vCard 验证内容（PROPFIND 默认只返回 etag）
+    const report = await call(`/cn/addressbooks/${firstBook.id}/`, {
+      method: "REPORT",
+      headers: { "Content-Type": "application/xml" },
+      body: '<?xml version="1.0"?><C:addressbook-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav"><D:prop><D:getetag/><C:address-data/></D:prop></C:addressbook-query>',
+    });
+    const xml = await report.text();
+    expect(xml).toContain(uid);
+    expect(xml).toContain("13900001111");
+  });
+
+  test("CardDAV PUT 编辑基线联系人只覆盖改动字段", async () => {
+    const victim = firstContact;
+    // 用一份改了 FN、其余原样的 vCard 覆盖
+    const modified = victim.vcard.replace(/FN:[^\r\n]*/, "FN:手机改的名字");
+    const res = await call(`/cn/addressbooks/${firstBook.id}/${victim.id}.vcf`, {
+      method: "PUT", body: modified,
+    });
+    expect(res.status).toBe(204);
+
+    const get = await call(`/cn/addressbooks/${firstBook.id}/${victim.id}.vcf`);
+    const text = await get.text();
+    expect(text).toContain("FN:手机改的名字");
+    expect(text).toContain("UID:" + victim.uid);
+  });
+
+  test("CardDAV DELETE 联系人后不再返回", async () => {
+    const victim = firstContact;
+    const res = await call(`/cn/addressbooks/${firstBook.id}/${victim.id}.vcf`, {
+      method: "DELETE",
+    });
+    expect(res.status).toBe(204);
+    const get = await call(`/cn/addressbooks/${firstBook.id}/${victim.id}.vcf`);
+    expect(get.status).toBe(404);
+    // 恢复，避免影响后续测试
+    await call("/admin/api/restore", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ uid: victim.uid }),
+    });
+  });
 });

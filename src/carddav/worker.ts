@@ -16,6 +16,7 @@
 import type { BookData, Catalog, CatalogBook, CatalogContact } from "./types";
 import type { Env } from "./worker-types";
 import { handleAdminApi } from "./admin";
+import { deleteContactByUid, putContact, type PutResult } from "./dav-write";
 import {
   checkCredentials,
   clearCookie,
@@ -544,7 +545,7 @@ const handleHomePropfind = async (
         `<CS:getctag>${xmlEscape(book.ctag)}</CS:getctag>` +
         `<D:sync-token>${xmlEscape(book.ctag)}</D:sync-token>` +
         supportedReportSet() +
-        `<D:current-user-privilege-set><D:privilege><D:read/></D:privilege></D:current-user-privilege-set>` +
+        `<D:current-user-privilege-set><D:privilege><D:read/></D:privilege><D:privilege><D:write/></D:privilege><D:privilege><D:write-content/></D:privilege><D:privilege><D:unbind/></D:privilege></D:current-user-privilege-set>` +
         `<C:supported-address-data><C:address-data-type content-type="text/vcard" version="3.0"/></C:supported-address-data>`;
       responses.push(responseBlock(hrefOf(base, route), props));
     }
@@ -580,7 +581,7 @@ const handleBookPropfind = async (
     `<CS:getctag>${xmlEscape(book.ctag)}</CS:getctag>` +
     `<D:sync-token>${xmlEscape(book.ctag)}</D:sync-token>` +
     supportedReportSet() +
-    `<D:current-user-privilege-set><D:privilege><D:read/></D:privilege></D:current-user-privilege-set>` +
+    `<D:current-user-privilege-set><D:privilege><D:read/></D:privilege><D:privilege><D:write/></D:privilege><D:privilege><D:write-content/></D:privilege><D:privilege><D:unbind/></D:privilege></D:current-user-privilege-set>` +
     `<C:supported-address-data><C:address-data-type content-type="text/vcard" version="3.0"/></C:supported-address-data>`;
   responses.push(responseBlock(hrefOf(base, route), bookProps));
 
@@ -717,10 +718,99 @@ const handleOptions = (): Response =>
     status: 200,
     headers: {
       DAV: "1, 2, 3, addressbook",
-      Allow: "OPTIONS, GET, HEAD, PROPFIND, REPORT",
+      Allow: "OPTIONS, GET, HEAD, PROPFIND, REPORT, PUT, DELETE",
       "MS-Author-Via": "DAV",
     },
   });
+
+/** DAV 写操作结果 → HTTP 响应（PUT/DELETE 共用） */
+const writeResult = (result: PutResult): Response => {
+  if (!result.ok) {
+    return new Response(result.error ?? "写入失败", {
+      status: result.status,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
+  }
+  // 204 必须无响应体；201 新增带 Location 由调用方补充
+  const headers: Record<string, string> = {};
+  if (result.version !== undefined) headers["X-VCards-Version"] = String(result.version);
+  return new Response(null, { status: result.status, headers });
+};
+
+/** PUT：新增或更新联系人，写回 D1 覆盖层 */
+const handlePut = async (
+  request: Request,
+  env: Env,
+  state: UserState,
+): Promise<Response> => {
+  const route = resolveRoute(new URL(request.url).pathname);
+  if (route.kind !== "contact") return methodNotAllowed();
+
+  const vcard = await request.text();
+  if (!vcard.includes("BEGIN:VCARD")) {
+    return new Response("Invalid vCard", { status: 400 });
+  }
+
+  // 查找现有联系人（判断编辑还是新增；同时取基线 vCard 做字段级对比）
+  const data = await getBookData(env, route.mode, route.bookId, state);
+  const existing = data ? findContact(data, route.contactId) : null;
+  const baseVcard = existing?.vcard;
+
+  // If-Match 乐观并发：若客户端带了 ETag 且与当前不符，返回 412
+  const ifMatch = request.headers.get("If-Match");
+  if (ifMatch && ifMatch !== "*" && existing) {
+    if (ifMatch.replace(/^W\//, "") !== existing.etag.replace(/^W\//, "")) {
+      return new Response(null, { status: 412 });
+    }
+  }
+
+  const result = await putContact({
+    env,
+    mode: route.mode,
+    bookId: route.bookId,
+    contactId: route.contactId,
+    vcard,
+    baseVcard,
+    baseUid: existing?.uid,
+  });
+  const response = writeResult(result);
+  if (result.ok && result.status === 201 && result.id) {
+    response.headers.set(
+      "Location",
+      hrefOf(baseUrl(request), {
+        kind: "contact",
+        mode: route.mode,
+        bookId: route.bookId,
+        contactId: result.id,
+      }),
+    );
+  }
+  return response;
+};
+
+/** DELETE：删除联系人（基线写墓碑，extra 直接删） */
+const handleDelete = async (
+  request: Request,
+  env: Env,
+  state: UserState,
+): Promise<Response> => {
+  const route = resolveRoute(new URL(request.url).pathname);
+  if (route.kind !== "contact") return methodNotAllowed();
+
+  const data = await getBookData(env, route.mode, route.bookId, state);
+  const existing = data ? findContact(data, route.contactId) : null;
+  if (!existing) return notFound();
+
+  // If-Match 乐观并发
+  const ifMatch = request.headers.get("If-Match");
+  if (ifMatch && ifMatch !== "*") {
+    if (ifMatch.replace(/^W\//, "") !== existing.etag.replace(/^W\//, "")) {
+      return new Response(null, { status: 412 });
+    }
+  }
+
+  return writeResult(await deleteContactByUid(env, existing.uid));
+};
 
 export default {
   async fetch(request: Request, env: Env, _ctx?: ExecutionContext): Promise<Response> {
@@ -802,6 +892,10 @@ export default {
           return await handlePropfind(request, env, state);
         case "REPORT":
           return await handleReport(request, env, state);
+        case "PUT":
+          return await handlePut(request, env, state);
+        case "DELETE":
+          return await handleDelete(request, env, state);
         default:
           return methodNotAllowed();
       }
