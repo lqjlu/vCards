@@ -53,9 +53,40 @@ npx wrangler secret put CARDDAV_PASS
 | `ADMIN_PASS` | 同 `CARDDAV_PASS` | 后台管理页登录密码（在 Cloudflare secrets 里定义/修改） |
 | `ALLOW_ANONYMOUS` | `false` | 设为 `true` 可关闭认证，不建议 |
 
-后台管理员账号独立于 CardDAV 账户：在 Cloudflare Workers 的「设置 → 变量和机密」里设置
-`ADMIN_USER` / `ADMIN_PASS`（`npx wrangler secret put ADMIN_USER`）即可修改后台登录凭据，
-改完旧会话自动失效。要改手机/电脑的 CardDAV 账号密码，则进管理页的「账号管理」。
+### 3.1 单独设置后台登录账号（可选）
+
+后台登录默认复用 CardDAV 凭据。想让后台与手机端账号彻底分开，就在 Worker 上加两个机密：
+
+**控制台操作（推荐）**
+
+1. 打开 <https://dash.cloudflare.com>，用管理 `585119.xyz` 的账号登录
+2. 左侧栏进入 **Workers & Pages**（新版可能显示为 **Compute (Workers)**）
+3. 点进 Worker **`vcards-carddav`**（不是仓库名 vCards）
+4. 顶部 **Settings / 设置**
+5. 左侧二级菜单 **Variables and Secrets / 变量和机密**
+   （旧界面叫 **Variables / 变量**，功能相同；不要找 Bindings，那是 R2/D1 绑定）
+6. 点 **+ Add / 添加**
+7. 类型选 **Secret / 机密**（不要选 Text，否则明文可见），变量名填 `ADMIN_USER`，值填后台用户名
+8. 再加一条 `ADMIN_PASS`，值填后台密码
+9. **必须点页面底部的 Deploy / 部署**，否则不会生成新版本
+
+**命令行操作**
+
+```bash
+npx wrangler login                                  # 浏览器授权一次
+npx wrangler secret put ADMIN_USER --name vcards-carddav
+npx wrangler secret put ADMIN_PASS --name vcards-carddav
+```
+
+生效后：
+
+- 打开 `/admin` 用新的 `ADMIN_USER` / `ADMIN_PASS` 登录；改过之后所有旧会话（30 天 Cookie）立即失效
+- 手机/电脑上的 CardDAV 账号不受影响，那些账号在管理页「账号与同步」里维护
+- 未配置时回退顺序：`ADMIN_USER` → `CARDDAV_USER` → `cn`；`ADMIN_PASS` → `CARDDAV_PASS` → `cn`
+- CI 每次部署只写入 `CARDDAV_PASS`，不会覆盖 `ADMIN_*`
+
+> GitHub 仓库 Settings 里的 Secrets 是给 Actions 用的（`CLOUDFLARE_API_TOKEN` 等），
+> 在那里加 `ADMIN_USER` / `ADMIN_PASS` 不会生效，两处不要混淆。
 
 ### 4. 绑定自定义域名
 
