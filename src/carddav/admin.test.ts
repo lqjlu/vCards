@@ -313,21 +313,20 @@ describe("管理界面与 API", () => {
     expect(detail.changes?.length).toBeGreaterThan(0);
   });
 
-  test("同步日志：If-Match 冲突记为 conflict 并返回当前 ETag", async () => {
+  test("同步日志：过期的 If-Match 不再硬 412，写入成功并标记 staleIfMatch", async () => {
     d1.logs = [];
     const res = await call(`/cn/addressbooks/${firstBook.id}/${firstContact.id}.vcf`, {
       method: "PUT",
       headers: { "If-Match": '"stale-etag"' },
       body: firstContact.vcard,
     });
-    expect(res.status).toBe(412);
-    expect(res.headers.get("ETag")).toBeTruthy();
+    // 单用户黄页：last-write-wins，避免客户端旧 ETag 导致号码永远写不进去
+    expect(res.status).toBe(204);
     const data = await (await call("/admin/api/logs?limit=10")).json() as {
       logs: Array<{ result: string; status: number; detail: string }>;
     };
-    expect(data.logs[0]?.status).toBe(412);
-    expect(data.logs[0]?.result).toBe("conflict");
-    expect(data.logs[0]?.detail).toContain("If-Match");
+    expect(data.logs[0]?.status).toBe(204);
+    expect(data.logs[0]?.detail).toContain("staleIfMatch");
   });
 
   test("同步日志：PROPFIND 读取被记录，管理 API 可清空日志", async () => {

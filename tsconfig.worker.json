@@ -29,6 +29,7 @@
     "src/carddav/sync-log.ts",
     "src/carddav/merge.ts",
     "src/carddav/merge.test.ts",
+    "src/carddav/store.test.ts",
     "src/carddav/types.ts"
   ]
 }

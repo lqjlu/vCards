@@ -808,27 +808,23 @@ const handlePut = async (
     : undefined;
   const overrides = existing ? state.overrides.get(existing.uid) : undefined;
 
-  // If-Match 乐观并发：兼容 If-Match 列表与弱 ETag（W/ 前缀）
+  // If-Match 乐观并发：兼容 If-Match 列表与弱 ETag（W/ 前缀）。
+  //
+  // 这里刻意不返回硬 412：本系统是单用户黄页，客户端（iOS/macOS）拿到过期 ETag
+  // 非常常见——多设备轮流同步、后台编辑、R2/缓存的可见性窗口都会造成短暂失配。
+  // 硬 412 会让手机上的号码修改「永远写不进服务器」（用户已多次反馈）。
+  // 策略：采用 last-write-wins 接受写入，并在同步日志中标记 staleIfMatch，
+  // 既保证编辑一定能落地，又保留可观测性。真正的并发保护由 ETag 内容化承担：
+  // mergedEtag 只依赖该联系人自身字段，改 A 不再影响 B，失配概率已大幅下降。
   const ifMatch = request.headers.get("If-Match");
+  let staleIfMatch = false;
   if (ifMatch && ifMatch !== "*" && existing) {
     const offered = ifMatch
       .split(",")
       .map((tag) => tag.trim().replace(/^W\//, ""))
       .filter(Boolean);
     const current = existing.etag.replace(/^W\//, "");
-    if (!offered.includes(current)) {
-      const response = new Response(null, {
-        status: 412,
-        headers: { ETag: existing.etag },
-      });
-      responseMeta.set(response, {
-        uid: existing.uid,
-        error: "If-Match 与当前 ETag 不一致（客户端拿到的是旧版本）",
-        ifMatch,
-        etag: existing.etag,
-      });
-      return response;
-    }
+    staleIfMatch = !offered.includes(current);
   }
 
   const result = await putContact({
@@ -849,6 +845,7 @@ const handlePut = async (
     error: result.error ?? "",
     ifMatch: ifMatch ?? "",
     etag: existing?.etag ?? "",
+    staleIfMatch,
     hadBase: Boolean(baseVcard),
     bookId: route.bookId,
     emails: vcard.match(/(?:^|\r?\n)EMAIL[^:]*:[^\r\n]*/gi)?.length ?? 0,
@@ -884,28 +881,26 @@ const handleDelete = async (
     return response;
   }
 
-  // If-Match 乐观并发（兼容列表与弱 ETag）
+  // If-Match 校验同 PUT：单用户黄页采用 last-write-wins，记录失配但不硬拒绝。
   const ifMatch = request.headers.get("If-Match");
+  let staleIfMatch = false;
   if (ifMatch && ifMatch !== "*") {
     const offered = ifMatch
       .split(",")
       .map((tag) => tag.trim().replace(/^W\//, ""))
       .filter(Boolean);
-    if (!offered.includes(existing.etag.replace(/^W\//, ""))) {
-      const response = new Response(null, { status: 412, headers: { ETag: existing.etag } });
-      responseMeta.set(response, {
-        uid: existing.uid,
-        error: "If-Match 与当前 ETag 不一致",
-        ifMatch,
-        etag: existing.etag,
-      });
-      return response;
-    }
+    staleIfMatch = !offered.includes(existing.etag.replace(/^W\//, ""));
   }
 
   const result = await deleteContactByUid(env, existing.uid);
   const response = writeResult(result);
-  responseMeta.set(response, { uid: existing.uid, action: "deleted", error: result.error ?? "" });
+  responseMeta.set(response, {
+    uid: existing.uid,
+    action: "deleted",
+    error: result.error ?? "",
+    ifMatch: ifMatch ?? "",
+    staleIfMatch,
+  });
   return response;
 };
 

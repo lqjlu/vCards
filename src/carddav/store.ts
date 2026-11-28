@@ -286,7 +286,14 @@ export const bumpVersion = async (env: Env): Promise<number> => {
 /**
  * 计算合并后的 ETag：
  * - 无用户介入的联系人沿用基线 ETag，避免无谓全量同步
- * - 有覆盖/新增的联系人用版本号参与 hash，保证每次修改必变
+ * - 有覆盖的联系人：ETag 只由「该联系人自己的覆盖内容 + 基线 ETag」决定
+ *
+ * 为什么不再用全局 version 参与 ETag：
+ * 任何写操作（手机 PUT、后台保存、账号/日志变更、恢复联系人）都会 bumpVersion，
+ * 若 ETag 绑定全局 version，所有被覆盖联系人的 ETag 会「同时」失效。
+ * iOS 批量同步先 REPORT 拿整批 ETag、再逐个 PUT：第一个 PUT 成功使 version+1 后，
+ * 后续 PUT 携带的 If-Match 全部过期 → 连锁 412，号码始终写不进服务器。
+ * 改为内容指纹后，改 A 不影响 B，ETag 稳定可追踪，412 循环被打破。
  */
 export const mergedEtag = (
   baseEtag: string,
@@ -294,8 +301,13 @@ export const mergedEtag = (
   state: UserState,
   hash: (value: string) => string,
 ): string => {
-  if (!state.overrides.has(uid) && !state.tombstones.has(uid)) return baseEtag;
-  return `"${hash(`${baseEtag}|${uid}|${state.version}`)}"`;
+  const overrides = state.overrides.get(uid);
+  if (!overrides?.length) return baseEtag;
+  const fingerprint = overrides
+    .map((o) => `${o.key}=${o.value === null ? "\u0000" : o.value}`)
+    .sort()
+    .join("|");
+  return `"${hash(`${baseEtag}|${uid}|${fingerprint}`)}"`;
 };
 
 /** 对 vCard 应用用户的字段级覆盖 */
