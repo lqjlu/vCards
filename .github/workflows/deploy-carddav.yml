@@ -44,6 +44,18 @@ jobs:
       # wrangler secret put 会额外触发一次异步的 "Secret Change" 部署，
       # 它用旧脚本覆盖紧随其后的 deploy，导致线上一直跑旧代码。
       # CardDAV / 管理员密码统一在 Cloudflare Workers 控制台手动维护。
+      - name: Preflight bundled worker
+        run: |
+          npx wrangler deploy --dry-run --outdir /tmp/worker-bundle >/dev/null 2>&1
+          echo "bundle bytes: $(wc -c < /tmp/worker-bundle/worker.js)"
+          for k in "navLogN" "loadLogs" "viewLogs" "admin/api/logs"; do
+            printf 'bundle %s: %s\n' "$k" "$(grep -c "$k" /tmp/worker-bundle/worker.js || true)"
+          done
+          echo "source admin-ui bytes: $(wc -c < src/carddav/admin-ui.ts)"
+          for k in "navLogN" "loadLogs" "admin/api/logs"; do
+            printf 'source %s: %s\n' "$k" "$(grep -c "$k" src/carddav/admin-ui.ts || true)"
+          done
+
       - name: Deploy Worker
         run: npx wrangler deploy
         env:
