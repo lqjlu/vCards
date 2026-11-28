@@ -66,6 +66,22 @@ jobs:
         run: |
           echo "--- wrangler deployments ---"
           npx wrangler deployments list || true
+          echo "--- script upload metadata ---"
+          API="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/vcards-carddav"
+          curl -fsS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" "$API" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('result',{}); print('modified_on:',r.get('modified_on')); print('deployment_trigger:',r.get('deployment_trigger')); print('usage_model:',r.get('usage_model'))" 2>/dev/null || true
+          echo "--- active versions (deployments API) ---"
+          curl -fsS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/deployments/by-script/vcards-carddav" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps(d.get('result',{}),ensure_ascii=False)[:1200])" 2>/dev/null || echo "deployments API unavailable"
+          echo "--- downloaded deployed script ---"
+          curl -fsS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H "Accept: application/javascript" \
+            "$API/content" -o /tmp/deployed.js 2>/dev/null && {
+              echo "deployed bytes: $(wc -c < /tmp/deployed.js)"
+              for k in "navLogN" "loadLogs" "admin/api/logs"; do
+                printf 'deployed %s: %s\n' "$k" "$(grep -c "$k" /tmp/deployed.js || true)"
+              done
+            } || echo "script download unavailable"
           echo "--- live check ---"
           for i in 1 2 3; do
             code=$(curl -s -o /tmp/live-admin.html -w "%{http_code}" -m 20 -u "${ADMIN_USER}:${ADMIN_PASS}" https://card.585119.xyz/admin || true)
