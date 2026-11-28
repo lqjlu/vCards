@@ -40,18 +40,10 @@ jobs:
       - name: Build static CardDAV data
         run: bun run build:carddav
 
-      - name: Set CardDAV password secret
-        run: |
-          if [ -n "$CARDDAV_PASS" ]; then
-            printf '%s' "$CARDDAV_PASS" | npx wrangler secret put CARDDAV_PASS
-          else
-            echo "CARDDAV_PASS secret not set; skip"
-          fi
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CARDDAV_PASS: ${{ secrets.CARDDAV_PASS }}
-
+      # 不再在 CI 里写 CARDDAV_PASS secret：
+      # wrangler secret put 会额外触发一次异步的 "Secret Change" 部署，
+      # 它用旧脚本覆盖紧随其后的 deploy，导致线上一直跑旧代码。
+      # CardDAV / 管理员密码统一在 Cloudflare Workers 控制台手动维护。
       - name: Deploy Worker
         run: npx wrangler deploy
         env:
@@ -64,7 +56,7 @@ jobs:
           npx wrangler deployments list || true
           echo "--- live check ---"
           for i in 1 2 3; do
-            code=$(curl -s -o /tmp/live-admin.html -w "%{http_code}" -m 20 https://card.585119.xyz/admin || true)
+            code=$(curl -s -o /tmp/live-admin.html -w "%{http_code}" -m 20 -u "${ADMIN_USER}:${ADMIN_PASS}" https://card.585119.xyz/admin || true)
             size=$(wc -c < /tmp/live-admin.html 2>/dev/null || echo 0)
             hits=$(grep -c "同步日志" /tmp/live-admin.html 2>/dev/null || true)
             echo "try$i http=$code size=$size syncLogHits=$hits"
@@ -74,6 +66,8 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          ADMIN_USER: ${{ secrets.ADMIN_USER }}
+          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
 
       - name: Upload data to R2
         run: bash scripts/upload-carddav.sh
