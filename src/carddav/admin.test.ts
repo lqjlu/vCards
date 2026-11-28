@@ -38,6 +38,7 @@ class MockD1 {
   tombstones = new Set<string>();
   customBooks: Array<{ id: string; name: string; display_name: string }> = [];
   accounts: Array<{ username: string; password_hash: string; platform: string }> = [];
+  logs: Array<Record<string, unknown>> = [];
 
   prepare(sql: string) {
     return {
@@ -49,7 +50,17 @@ class MockD1 {
   }
   private run(sql: string, args: unknown[]) {
     if (sql.includes("UPDATE meta SET value")) this.meta.version += 1;
-    else if (sql.startsWith("DELETE FROM overrides WHERE uid")) {
+    else if (sql.includes("CREATE TABLE IF NOT EXISTS sync_logs")) { /* 自愈建表 */ }
+    else if (sql.startsWith("INSERT INTO sync_logs")) {
+      this.logs.push({
+        id: this.logs.length + 1,
+        created_at: args[0], method: args[1], path: args[2], username: args[3],
+        platform: args[4], status: args[5], result: args[6], uid: args[7],
+        detail: args[8], duration_ms: args[9], user_agent: args[10],
+      });
+    } else if (sql.startsWith("DELETE FROM sync_logs")) {
+      if (sql.includes("WHERE id NOT IN")) { /* 清理旧日志 */ } else this.logs = [];
+    } else if (sql.startsWith("DELETE FROM overrides WHERE uid")) {
       const uid = args[0] as string;
       for (const k of [...this.overrides.keys()]) if (k.startsWith(uid + "|")) this.overrides.delete(k);
     } else if (sql.startsWith("INSERT INTO overrides") || sql.startsWith("INSERT OR REPLACE INTO overrides")) {
@@ -95,6 +106,11 @@ class MockD1 {
     if (sql.includes("FROM tombstones")) return { results: [...this.tombstones].map((uid) => ({ uid })) };
     if (sql.includes("FROM custom_books")) return { results: this.customBooks };
     if (sql.includes("FROM dav_accounts")) return { results: this.accounts };
+    if (sql.includes("FROM sync_logs")) {
+      const match = sql.match(/LIMIT (\d+)/);
+      const limit = match ? Number(match[1]) : 200;
+      return { results: [...this.logs].reverse().slice(0, limit) };
+    }
     return { results: [] };
   }
 }
@@ -249,6 +265,86 @@ describe("管理界面与 API", () => {
     const res = await call(`/cn/addressbooks/${firstBook.id}/`, { method: "OPTIONS" });
     expect(res.headers.get("Allow")).toContain("PUT");
     expect(res.headers.get("Allow")).toContain("DELETE");
+  });
+
+  test("手机提交空 TEL 不会把基线号码清空", async () => {
+    const data = JSON.parse(
+      fs.readFileSync(path.join(DIST_DIR, "books", "ios", `${firstBook.id}.json`), "utf8"),
+    ) as { contacts: Array<{ id: string; uid: string; vcard: string }> };
+    const victim = data.contacts.find((c) => /(^|\r?\n)TEL[^:]*:[^\r\n]+/.test(c.vcard));
+    expect(victim).toBeTruthy();
+    const original = victim!.vcard.match(/(?:^|\r?\n)TEL[^:]*:([^\r\n]+)/)?.[1] ?? "";
+    expect(original).not.toBe("");
+    const blanked = victim!.vcard.replace(/TEL[^:]*:[^\r\n]*/g, "TEL;TYPE=CELL:");
+    const put = await call(`/cn/addressbooks/${firstBook.id}/${victim!.id}.vcf`, {
+      method: "PUT", body: blanked,
+    });
+    expect(put.status).toBe(204);
+    const got = await (await call(`/cn/addressbooks/${firstBook.id}/${victim!.id}.vcf`)).text();
+    expect(got).toContain(original);
+    const list = await (await call("/admin/api/contacts")).json() as {
+      contacts: Array<{ uid: string; fields: Array<{ label: string; value: string }> }>;
+    };
+    const item = list.contacts.find((c) => c.uid === victim!.uid);
+    expect(item?.fields.some((f) => /^TEL/i.test(f.label) && f.value === original)).toBe(true);
+  });
+
+  test("同步日志：PUT 写回生成成功记录并含字段变化", async () => {
+    d1.logs = [];
+    const vcard = [
+      "BEGIN:VCARD", "VERSION:3.0", "UID:日志测试联系人", "FN:日志测试联系人",
+      "TEL;TYPE=CELL:13900002222", "END:VCARD", "",
+    ].join("\r\n");
+    const res = await call(`/cn/addressbooks/${firstBook.id}/log-new.vcf`, {
+      method: "PUT", body: vcard,
+    });
+    expect(res.status).toBe(201);
+
+    const data = await (await call("/admin/api/logs?limit=10")).json() as {
+      logs: Array<{ method: string; status: number; result: string; username: string; uid: string; detail: string }>;
+    };
+    const put = data.logs.find((l) => l.method === "PUT");
+    expect(put?.status).toBe(201);
+    expect(put?.result).toBe("ok");
+    expect(put?.username).toBe("cn");
+    expect(put?.uid).toBe("日志测试联系人");
+    const detail = JSON.parse(put?.detail ?? "{}") as { action?: string; changes?: unknown[] };
+    expect(detail.action).toBe("created");
+    expect(detail.changes?.length).toBeGreaterThan(0);
+  });
+
+  test("同步日志：If-Match 冲突记为 conflict 并返回当前 ETag", async () => {
+    d1.logs = [];
+    const res = await call(`/cn/addressbooks/${firstBook.id}/${firstContact.id}.vcf`, {
+      method: "PUT",
+      headers: { "If-Match": '"stale-etag"' },
+      body: firstContact.vcard,
+    });
+    expect(res.status).toBe(412);
+    expect(res.headers.get("ETag")).toBeTruthy();
+    const data = await (await call("/admin/api/logs?limit=10")).json() as {
+      logs: Array<{ result: string; status: number; detail: string }>;
+    };
+    expect(data.logs[0]?.status).toBe(412);
+    expect(data.logs[0]?.result).toBe("conflict");
+    expect(data.logs[0]?.detail).toContain("If-Match");
+  });
+
+  test("同步日志：PROPFIND 读取被记录，管理 API 可清空日志", async () => {
+    d1.logs = [];
+    const res = await call(`/cn/addressbooks/${firstBook.id}/`, {
+      method: "PROPFIND", headers: { Depth: "1" },
+    });
+    expect(res.status).toBe(207);
+    const before = await (await call("/admin/api/logs")).json() as {
+      logs: Array<{ method: string; status: number }>;
+    };
+    expect(before.logs.some((l) => l.method === "PROPFIND" && l.status === 207)).toBe(true);
+
+    const cleared = await call("/admin/api/logs", { method: "DELETE" });
+    expect(cleared.status).toBe(200);
+    const after = await (await call("/admin/api/logs")).json() as { logs: unknown[] };
+    expect(after.logs.length).toBe(0);
   });
 
   test("CardDAV PUT 新增联系人写入 D1 覆盖层并出现在列表", async () => {

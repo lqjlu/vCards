@@ -26,6 +26,7 @@ import {
   sessionCookie,
 } from "./admin-auth";
 import { ADMIN_HTML, LOGIN_HTML } from "./admin-ui";
+import { recordSyncLog, scheduleSyncLog, type SyncLogEntry } from "./sync-log";
 import {
   applyOverrides,
   hashPassword,
@@ -82,9 +83,10 @@ const notFound = (): Response =>
   new Response("Not Found", { status: 404, headers: { "Content-Type": "text/plain" } });
 
 const methodNotAllowed = (): Response =>
-  new Response("Read-only CardDAV server", {
+  new Response("Method Not Allowed", {
     status: 405,
-    headers: { Allow: "OPTIONS, GET, HEAD, PROPFIND, REPORT" },
+    // 必须与 OPTIONS 一致声明写权限，部分客户端会据此决定要不要发 PUT
+    headers: { Allow: "OPTIONS, GET, HEAD, PROPFIND, REPORT, PUT, DELETE" },
   });
 
 const unauthorized = (realm: string): Response =>
@@ -294,7 +296,8 @@ const getCatalog = async (env: Env, state?: UserState): Promise<Catalog> => {
     const baseContacts = book.contacts.filter((c) => !user.tombstones.has(c.uid));
     const extras = (user.extraByBook.get(book.id) ?? []).map((row) => ({
       id: row.id,
-      etag: row.etag,
+      // 覆盖层变化必须反映到 ETag，否则iOS会认为用户新增联系人没变、继续用旧缓存
+      etag: mergedEtag(row.etag, row.uid, user, hashHex),
       uid: row.uid,
     }));
     const contacts = [...baseContacts, ...extras];
@@ -315,13 +318,21 @@ const getCatalog = async (env: Env, state?: UserState): Promise<Catalog> => {
       name: custom.name,
       displayName: `${custom.name}(${extras.length})`,
       ctag: mergedCtag(`"custom-${custom.id}"`, user, hashHex),
-      contacts: extras.map((row) => ({ id: row.id, etag: row.etag, uid: row.uid })),
+      contacts: extras.map((row) => ({
+        id: row.id,
+        etag: mergedEtag(row.etag, row.uid, user, hashHex),
+        uid: row.uid,
+      })),
     });
   }
 
   const macosContacts = [
     ...base.macosBook.contacts.filter((c) => !user.tombstones.has(c.uid)),
-    ...user.extraContacts.map((row) => ({ id: row.id, etag: row.etag, uid: row.uid })),
+    ...user.extraContacts.map((row) => ({
+      id: row.id,
+      etag: mergedEtag(row.etag, row.uid, user, hashHex),
+      uid: row.uid,
+    })),
   ];
   const macosBook: CatalogBook = {
     ...base.macosBook,
@@ -374,7 +385,7 @@ const getBookData = async (
   const extras = extraRows.map((row) => ({
     id: row.id,
     uid: row.uid,
-    etag: row.etag,
+    etag: mergedEtag(row.etag, row.uid, user, hashHex),
     vcard: applyOverrides(row.vcard, row.uid, user),
   }));
 
@@ -754,7 +765,11 @@ const getStoredVCard = async (
   return data.contacts.find((c) => c.uid === uid)?.vcard;
 };
 
-/** DAV 写操作结果 → HTTP 响应（PUT/DELETE 共用） */const writeResult = (result: PutResult): Response => {
+/** 写操作结果附带的日志信息（不暴露给客户端） */
+const responseMeta = new WeakMap<Response, Record<string, unknown>>();
+
+/** DAV 写操作结果 → HTTP 响应（PUT/DELETE 共用） */
+const writeResult = (result: PutResult): Response => {
   if (!result.ok) {
     return new Response(result.error ?? "写入失败", {
       status: result.status,
@@ -777,8 +792,10 @@ const handlePut = async (
   if (route.kind !== "contact") return methodNotAllowed();
 
   const vcard = await request.text();
-  if (!vcard.includes("BEGIN:VCARD")) {
-    return new Response("Invalid vCard", { status: 400 });
+  if (!/BEGIN:VCARD/i.test(vcard)) {
+    const response = new Response("Invalid vCard", { status: 400 });
+    responseMeta.set(response, { error: "请求体不是合法 vCard" });
+    return response;
   }
 
   // 查找现有联系人（判断编辑还是新增；同时取原始基线 vCard 做字段级对比）
@@ -791,11 +808,26 @@ const handlePut = async (
     : undefined;
   const overrides = existing ? state.overrides.get(existing.uid) : undefined;
 
-  // If-Match 乐观并发：若客户端带了 ETag 且与当前不符，返回 412
+  // If-Match 乐观并发：兼容 If-Match 列表与弱 ETag（W/ 前缀）
   const ifMatch = request.headers.get("If-Match");
   if (ifMatch && ifMatch !== "*" && existing) {
-    if (ifMatch.replace(/^W\//, "") !== existing.etag.replace(/^W\//, "")) {
-      return new Response(null, { status: 412 });
+    const offered = ifMatch
+      .split(",")
+      .map((tag) => tag.trim().replace(/^W\//, ""))
+      .filter(Boolean);
+    const current = existing.etag.replace(/^W\//, "");
+    if (!offered.includes(current)) {
+      const response = new Response(null, {
+        status: 412,
+        headers: { ETag: existing.etag },
+      });
+      responseMeta.set(response, {
+        uid: existing.uid,
+        error: "If-Match 与当前 ETag 不一致（客户端拿到的是旧版本）",
+        ifMatch,
+        etag: existing.etag,
+      });
+      return response;
     }
   }
 
@@ -810,6 +842,17 @@ const handlePut = async (
     overrides,
   });
   const response = writeResult(result);
+  responseMeta.set(response, {
+    uid: result.uid ?? existing?.uid ?? "",
+    action: result.action ?? "updated",
+    changes: result.changes ?? [],
+    error: result.error ?? "",
+    ifMatch: ifMatch ?? "",
+    etag: existing?.etag ?? "",
+    hadBase: Boolean(baseVcard),
+    bookId: route.bookId,
+    emails: vcard.match(/(?:^|\r?\n)EMAIL[^:]*:[^\r\n]*/gi)?.length ?? 0,
+  });
   if (result.ok && result.status === 201 && result.id) {
     response.headers.set(
       "Location",
@@ -835,21 +878,39 @@ const handleDelete = async (
 
   const data = await getBookData(env, route.mode, route.bookId, state);
   const existing = data ? findContact(data, route.contactId) : null;
-  if (!existing) return notFound();
+  if (!existing) {
+    const response = notFound();
+    responseMeta.set(response, { error: "要删除的联系人不存在或已被删除" });
+    return response;
+  }
 
-  // If-Match 乐观并发
+  // If-Match 乐观并发（兼容列表与弱 ETag）
   const ifMatch = request.headers.get("If-Match");
   if (ifMatch && ifMatch !== "*") {
-    if (ifMatch.replace(/^W\//, "") !== existing.etag.replace(/^W\//, "")) {
-      return new Response(null, { status: 412 });
+    const offered = ifMatch
+      .split(",")
+      .map((tag) => tag.trim().replace(/^W\//, ""))
+      .filter(Boolean);
+    if (!offered.includes(existing.etag.replace(/^W\//, ""))) {
+      const response = new Response(null, { status: 412, headers: { ETag: existing.etag } });
+      responseMeta.set(response, {
+        uid: existing.uid,
+        error: "If-Match 与当前 ETag 不一致",
+        ifMatch,
+        etag: existing.etag,
+      });
+      return response;
     }
   }
 
-  return writeResult(await deleteContactByUid(env, existing.uid));
+  const result = await deleteContactByUid(env, existing.uid);
+  const response = writeResult(result);
+  responseMeta.set(response, { uid: existing.uid, action: "deleted", error: result.error ?? "" });
+  return response;
 };
 
 export default {
-  async fetch(request: Request, env: Env, _ctx?: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     const method = request.method.toUpperCase();
     const url = new URL(request.url);
 
@@ -908,35 +969,102 @@ export default {
       if (!(await isAdminAuthenticated(request, env))) {
         return jsonResponse({ error: "未登录" }, 401);
       }
-      return await handleAdminApi(request, env, url.pathname);
+      return await handleAdminApi(request, env, url.pathname + url.search);
     }
 
     // ---- CardDAV：Basic Auth，账户从 D1/R2 镜像读取 ----
+    const started = Date.now();
+    const basicUser = parseBasic(request)?.username ?? "";
+    const ua = request.headers.get("User-Agent") ?? "";
     const state = await loadUserState(env);
     const auth = await checkAuth(request, env, state);
-    if ("error" in auth) return auth.error;
+    if ("error" in auth) {
+      await recordSyncLog(env, {
+        method,
+        path: url.pathname,
+        status: 401,
+        username: basicUser,
+        detail: { error: "CardDAV 登录失败：用户名或密码错误" },
+        durationMs: Date.now() - started,
+        userAgent: ua,
+      });
+      return auth.error;
+    }
+    const account = auth.account;
+
+    const logResponse = async (
+      response: Response,
+      extra: Partial<SyncLogEntry> = {},
+      wait = false,
+    ): Promise<void> => {
+      const meta = responseMeta.get(response) ?? {};
+      const entry: SyncLogEntry = {
+        method,
+        path: url.pathname,
+        status: response.status,
+        username: account.username || basicUser,
+        platform: account.platform,
+        uid: typeof meta.uid === "string" ? meta.uid : "",
+        userAgent: ua,
+        durationMs: Date.now() - started,
+        ...extra,
+      };
+      if (Object.keys(meta).length) {
+        entry.detail = { ...meta, ...(typeof entry.detail === "object" ? entry.detail : {}) };
+      }
+      if (wait || typeof ctx?.waitUntil !== "function") {
+        await recordSyncLog(env, entry);
+      } else {
+        scheduleSyncLog(env, ctx, entry);
+      }
+    };
+
+    // 写操作必须等日志落库后再返回，方便后台立刻看到手机端的同步结果
+    const isWrite = method === "PUT" || method === "DELETE";
 
     try {
+      let response: Response;
       switch (method) {
         case "OPTIONS":
-          return handleOptions();
+          response = handleOptions();
+          break;
         case "GET":
         case "HEAD":
-          return handleGet(request, env, state);
+          response = await handleGet(request, env, state);
+          break;
         case "PROPFIND":
-          return await handlePropfind(request, env, state);
+          response = await handlePropfind(request, env, state);
+          break;
         case "REPORT":
-          return await handleReport(request, env, state);
+          response = await handleReport(request, env, state);
+          break;
         case "PUT":
-          return await handlePut(request, env, state);
+          response = await handlePut(request, env, state);
+          break;
         case "DELETE":
-          return await handleDelete(request, env, state);
+          response = await handleDelete(request, env, state);
+          break;
         default:
-          return methodNotAllowed();
+          response = methodNotAllowed();
       }
+      // 写操作必须等日志落库后再返回，方便后台立刻看到手机端的同步结果
+      await logResponse(response, {}, isWrite);
+      return response;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return new Response(`Internal Server Error: ${message}`, { status: 500 });
+      const response = new Response(`Internal Server Error: ${message}`, { status: 500 });
+      await recordSyncLog(env, {
+        method,
+        path: url.pathname,
+        status: 500,
+        result: "fail",
+        username: account.username || basicUser,
+        platform: account.platform,
+        detail: { error: message },
+        durationMs: Date.now() - started,
+        userAgent: ua,
+      });
+      return response;
     }
   },
 };

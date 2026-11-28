@@ -27,6 +27,7 @@
     "src/carddav/admin-ui.ts",
     "src/carddav/store.ts",
     "src/carddav/worker-types.ts",
-    "src/carddav/dav-write.ts"
+    "src/carddav/dav-write.ts",
+    "src/carddav/sync-log.ts"
   ]
 }

@@ -90,6 +90,12 @@ export const vcardUid = (vcard: string): string | null => {
   return null;
 };
 
+export interface PutChange {
+  field: string;
+  from: string | null;
+  to: string | null;
+}
+
 export interface PutResult {
   ok: boolean;
   status: number;
@@ -97,6 +103,9 @@ export interface PutResult {
   id?: string;
   version?: number;
   error?: string;
+  action?: "created" | "updated" | "deleted";
+  /** 字段级变化，写进同步日志便于后台排查 */
+  changes?: PutChange[];
 }
 
 /**
@@ -146,6 +155,7 @@ export const putContact = async (params: {
     const viewByName = groupBy(view);
     const submittedByName = groupBy(submitted);
     const names = new Set([...viewByName.keys(), ...submittedByName.keys()]);
+    const incomingNames = new Set(submitted.map((f) => f.name));
     const next: FieldOverride[] = [];
 
     for (const name of names) {
@@ -155,6 +165,8 @@ export const putContact = async (params: {
       for (let i = 0; i < count; i++) {
         const before = current[i];
         const after = incoming[i];
+        // 客户端提交空值不代表要清空基线号码；忽略，避免同步把电话抹成空
+        if (after?.value === "") continue;
         if (before && after) {
           // 追加字段：始终保留为 + key
           if (before.key.startsWith("+")) {
@@ -180,6 +192,8 @@ export const putContact = async (params: {
         if (!before) continue;
         // 客户端删掉的字段 → 墓碑（追加字段与孤儿直接不写回）
         if (before.key.startsWith("+") || before.baseValue === undefined) continue;
+        // 整张 vCard 连 TEL 字段都没带：通常是客户端同步时序问题，不据此删号码
+        if (name === "TEL" && !incomingNames.has("TEL")) continue;
         next.push({ key: before.key, value: null });
       }
     }
@@ -199,7 +213,15 @@ export const putContact = async (params: {
     }
     await db.batch(batch);
     const version = await bumpVersion(env);
-    return { ok: true, status: 204, uid, version };
+    const previousMap = new Map(previous.map((o) => [o.key, o.value]));
+    const changes = next.map((o) => ({
+      field: o.key,
+      from: previousMap.has(o.key)
+        ? (previousMap.get(o.key) ?? null)
+        : (baseFields.find((f) => f.key === o.key)?.value ?? null),
+      to: o.value,
+    }));
+    return { ok: true, status: 204, uid, version, action: "updated", changes };
   }
 
   // 新增联系人：确认 uid 不与现有冲突
@@ -208,6 +230,7 @@ export const putContact = async (params: {
 
   const etag = `"${sha256(vcard)}"`;
   const id = newId("c-");
+  const vcardFields = parseVCard(vcard);
   const resolvedBook = mode === "macos" ? bookId : bookId;
   await db
     .prepare(
@@ -216,7 +239,15 @@ export const putContact = async (params: {
     .bind(id, uid, resolvedBook, vcard, etag, now)
     .run();
   const version = await bumpVersion(env);
-  return { ok: true, status: 201, uid, id, version };
+  return {
+    ok: true,
+    status: 201,
+    uid,
+    id,
+    version,
+    action: "created",
+    changes: vcardFields.map((f) => ({ field: f.key, from: null, to: f.value })),
+  };
 };
 
 /** 删除联系人：基线写墓碑，extra 直接删 */
@@ -238,5 +269,5 @@ export const deleteContactByUid = async (
   }
   await db.prepare("DELETE FROM overrides WHERE uid = ?").bind(uid).run();
   const version = await bumpVersion(env);
-  return { ok: true, status: 204, uid, version };
+  return { ok: true, status: 204, uid, version, action: "deleted" };
 };

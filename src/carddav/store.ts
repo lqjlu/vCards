@@ -124,10 +124,25 @@ const getSharedCache = (): Cache | undefined =>
 
 const writeCaches = async (env: Env, state: UserState): Promise<void> => {
   userStateCache = { state, expires: Date.now() + USER_STATE_TTL };
-  try {
-    await env.R2.put(STATE_R2_KEY, JSON.stringify(serializeState(state)));
-  } catch {
-    // R2 镜像写入失败：下次会回源 D1，不影响正确性
+  const payload = JSON.stringify(serializeState(state));
+  let mirrored = false;
+  for (let attempt = 0; attempt < 2 && !mirrored; attempt++) {
+    try {
+      await env.R2.put(STATE_R2_KEY, payload);
+      mirrored = true;
+    } catch {
+      // 再试一次；R2 偶发 5xx 时重试通常能成功
+    }
+  }
+  if (!mirrored) {
+    // 关键：镜像写不进去时必须删掉旧镜像，否则后续所有 isolate 都会一直读到
+    // 过期状态（老代码只 catch 不删除，导致“写成功了但手机/后台看不到”）。
+    console.error("[overlay] R2 镜像写入失败，删除旧镜像以回源 D1");
+    try {
+      if (typeof env.R2.delete === "function") await env.R2.delete(STATE_R2_KEY);
+    } catch {
+      // 删除也失败时，D1 仍是唯一真源；下一次 bumpVersion 会再试
+    }
   }
   const cache = getSharedCache();
   if (cache) {

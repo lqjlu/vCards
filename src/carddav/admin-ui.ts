@@ -223,6 +223,50 @@ h1{margin:4px 0 0;font-size:22px;font-weight:650;letter-spacing:-.55px;line-heig
 .tip p{margin:0;color:var(--muted);font-size:11.5px;line-height:1.6}
 body.locked{overflow:hidden}
 
+/* ── 日志页 ─────────────────────────── */
+.log-hero{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:18px 22px;margin-bottom:16px;border:1px solid var(--line);border-radius:16px;background:linear-gradient(115deg,#fff 30%,#f2f7f6 100%);box-shadow:var(--shadow-sm)}
+.log-hero h2{margin:0 0 5px;font-size:16px;font-weight:650;letter-spacing:-.3px}
+.log-hero p{margin:0;max-width:680px;color:var(--muted);font-size:12.5px;line-height:1.6}
+.log-summary{display:flex;gap:20px;flex:none}
+.log-summary div{text-align:center}
+.log-summary b{display:block;font-size:22px;font-weight:650;line-height:1.2;font-variant-numeric:tabular-nums}
+.log-summary span{font-size:10.5px;color:var(--muted)}
+.log-summary .good b{color:var(--teal)}
+.log-summary .bad b{color:var(--red)}
+.log-summary .warn b{color:var(--amber)}
+.log-filters{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:12px}
+.log-tab{padding:6px 12px;border:1px solid var(--line);border-radius:9px;background:var(--panel);color:var(--muted);font-size:12px;cursor:pointer;transition:all .14s}
+.log-tab:hover{border-color:#c8cee0;color:var(--text)}
+.log-tab.on{border-color:var(--accent);background:var(--accent);color:#fff}
+.log-search{display:flex;align-items:center;gap:7px;width:220px;padding:6px 10px;border:1px solid var(--line);border-radius:9px;background:var(--panel)}
+.log-search input{width:100%;border:0;outline:0;background:transparent;font:inherit;font-size:12px;color:var(--text)}
+.log-table{font-size:12px}
+.log-head,.log-row{display:grid;grid-template-columns:150px 72px 110px 96px minmax(0,1fr) 74px;gap:10px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line-soft)}
+.log-head{background:#fafbfe;color:var(--muted);font-size:10.5px;font-weight:600;letter-spacing:.5px;text-transform:uppercase}
+.log-row:last-child{border-bottom:0}
+.log-row:hover{background:#fafbff}
+.log-row.bad{background:#fffafa}
+.log-row.conflict{background:#fdfbff}
+.log-time{color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap;font-size:11.5px}
+.log-time small{display:block;font-size:10px;color:var(--faint)}
+.log-method{font-weight:700;font-size:10.5px;letter-spacing:.4px;color:var(--accent-dark)}
+.log-user{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.log-user small{display:block;color:var(--faint);font-size:10px}
+.log-status{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:999px;font-size:10.5px;font-weight:650;white-space:nowrap}
+.log-status.ok{background:var(--teal-soft);color:var(--teal)}
+.log-status.bad{background:var(--red-soft);color:var(--red)}
+.log-status.warn{background:var(--amber-soft);color:var(--amber)}
+.log-status.conflict{background:var(--accent-soft);color:var(--accent-dark)}
+.log-body{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#39435a}
+.log-body .err{color:var(--red)}
+.log-body code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:10.5px;color:var(--muted)}
+.log-more{border:0;background:transparent;color:var(--accent);font-size:11px;cursor:pointer;padding:3px 5px;border-radius:5px}
+.log-more:hover{background:var(--accent-soft)}
+.log-detail{grid-column:1/-1;padding:10px 12px;margin-top:6px;border-radius:9px;background:#f7f8fc;color:#4a5468;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:10.5px;line-height:1.7;white-space:pre-wrap;word-break:break-all}
+.log-foot{display:flex;align-items:center;justify-content:space-between;padding:11px 16px;color:var(--faint);font-size:11px;border-top:1px solid var(--line-soft)}
+.log-empty{padding:54px 20px;text-align:center;color:var(--muted)}
+.log-empty b{display:block;color:var(--text);font-size:14px;margin-bottom:5px}
+
 /* ── 响应式 ─────────────────────────── */
 @media(max-width:1080px){.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.search{width:260px}.acc-grid{grid-template-columns:1fr}.tips{grid-template-columns:1fr}.tip{border-right:0;border-bottom:1px solid var(--line-soft)}.tip:last-child{border-bottom:0}}
 @media(max-width:900px){
@@ -252,6 +296,17 @@ body.locked{overflow:hidden}
 .hero-count{display:none}
 .drawer{width:100%}
 .drow{grid-template-columns:74px minmax(0,1fr) auto}
+.log-hero{flex-direction:column;align-items:flex-start;gap:12px}
+.log-summary{width:100%;justify-content:space-around}
+.log-head{display:none}
+.log-row{grid-template-columns:1fr auto;gap:6px;padding:12px 14px}
+.log-time{grid-column:1}
+.log-method{grid-column:2;text-align:right}
+.log-user{grid-column:1}
+.log-status{grid-column:2;justify-self:end}
+.log-body{grid-column:1/-1;white-space:normal;line-height:1.5}
+.log-more{grid-column:1/-1;justify-self:start}
+.log-search{width:100%}
 }
 @media(hover:none){.item-ops{opacity:1}.drow .icon-btn{opacity:1}}
 </style>
@@ -271,6 +326,10 @@ body.locked{overflow:hidden}
 <button type="button" class="nav-item" data-view="accounts" onclick="setView('accounts')">
 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="10" rx="3"></rect><path d="M8 10V7.6a4 4 0 0 1 8 0V10"></path><circle cx="12" cy="15" r="1.3"></circle></svg>
 <span>账号与同步</span><span class="n" id="navAccN">0</span>
+</button>
+<button type="button" class="nav-item" data-view="logs" onclick="setView('logs')">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v14H4z"></path><path d="M8 9h8M8 13h8M8 17h5"></path></svg>
+<span>同步日志</span><span class="n" id="navLogN">0</span>
 </button>
 </nav>
 <div class="cat-block" id="catBlock">
@@ -305,6 +364,14 @@ body.locked{overflow:hidden}
 <button type="button" class="btn primary" id="btnNewAccount" onclick="focusAccForm()" style="display:none">
 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg>
 新增账号
+</button>
+<button type="button" class="btn" id="btnRefreshLogs" onclick="loadLogs()" style="display:none">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"></path><path d="M20 5v6h-6"></path></svg>
+刷新日志
+</button>
+<button type="button" class="btn danger" id="btnClearLogs" onclick="clearLogs()" style="display:none">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"></path><path d="M9 7V5h6v2"></path><path d="M6 7l1 13h10l1-13"></path></svg>
+清空
 </button>
 </div>
 </header>
@@ -382,6 +449,28 @@ body.locked{overflow:hidden}
 <div class="tip"><span class="tip-n">03</span><div><b>手机也能直接编辑</b><p>已开放 PUT / DELETE，手机上改动的联系人会写回覆盖层并保留原字段。</p></div></div>
 </section>
 </section>
+
+<section id="viewLogs" style="display:none">
+<div class="log-hero">
+<div><h2>设备同步记录</h2><p>这里记录手机 / 电脑每次读取与写回的结果。看到「失败」或「冲突」时，点开该行查看具体原因；写入成功会列出发生变化的字段。</p></div>
+<div class="log-summary">
+<div class="good"><b id="logOk">0</b><span>成功</span></div>
+<div class="bad"><b id="logFail">0</b><span>失败</span></div>
+<div class="warn"><b id="logConflict">0</b><span>冲突</span></div>
+</div>
+</div>
+<div class="log-filters">
+<button type="button" class="log-tab on" data-log="all" onclick="setLogFilter('all')">全部</button>
+<button type="button" class="log-tab" data-log="write" onclick="setLogFilter('write')">写回</button>
+<button type="button" class="log-tab" data-log="fail" onclick="setLogFilter('fail')">失败 / 冲突</button>
+<label class="log-search"><input id="logQ" placeholder="搜索账号、联系人、错误…" oninput="renderLogs()"></label>
+</div>
+<section class="panel log-table">
+<div class="log-head"><span>时间</span><span>方法</span><span>账号</span><span>结果</span><span>详情</span><span>操作</span></div>
+<div id="logList"></div>
+<div class="log-foot"><span id="logStat">—</span><span>每 30 秒自动刷新</span></div>
+</section>
+</section>
 </main>
 </div>
 </div>
@@ -403,7 +492,7 @@ body.locked{overflow:hidden}
 
 <script>
 const $=id=>document.getElementById(id);
-let DATA={contacts:[],version:0},BOOKS=[],CUR=null,SEL=new Set(),CAT='',VIEW='contacts';
+let DATA={contacts:[],version:0},BOOKS=[],CUR=null,SEL=new Set(),CAT='',VIEW='contacts',LOGS=[],LOGFILTER='all',OPENLOG='';
 const FIELD_NAMES={TEL:'电话',EMAIL:'邮箱',URL:'网址',ORG:'组织',ADR:'地址',NOTE:'备注',FN:'名称',N:'姓名',TITLE:'头衔',BDAY:'生日',IMPP:'即时通讯','X-SOCIALPROFILE':'社交账号'};
 const TINTS=[['#eef1fe','#4338ca'],['#e6f7f4','#0f766e'],['#fdf1e6','#b45309'],['#fdeef5','#a21caf'],['#e9f2fe','#1d4ed8'],['#f2eefe','#6d28d9'],['#fdecec','#b91c1c']];
 const SVG={
@@ -426,17 +515,22 @@ VIEW=v;
 document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('on',b.getAttribute('data-view')===v));
 $('viewContacts').style.display=v==='contacts'?'block':'none';
 $('viewAccounts').style.display=v==='accounts'?'block':'none';
+$('viewLogs').style.display=v==='logs'?'block':'none';
 $('catBlock').style.display=v==='contacts'?'flex':'none';
 $('searchWrap').style.display=v==='contacts'?'flex':'none';
 $('btnNewContact').style.display=v==='contacts'?'inline-flex':'none';
 $('btnNewAccount').style.display=v==='accounts'?'inline-flex':'none';
-$('pageEyebrow').textContent=v==='contacts'?'CONTACTS':'SETTINGS';
-$('pageTitle').textContent=v==='contacts'?'通讯录':'账号与同步';
-$('pageSub').textContent=v==='contacts'?'浏览分类、搜索号码、维护联系人':'管理 CardDAV 登录账号与设备同步方式';
+$('btnRefreshLogs').style.display=v==='logs'?'inline-flex':'none';
+$('btnClearLogs').style.display=v==='logs'?'inline-flex':'none';
+$('pageEyebrow').textContent=v==='contacts'?'CONTACTS':v==='logs'?'ACTIVITY':'SETTINGS';
+$('pageTitle').textContent=v==='contacts'?'通讯录':v==='logs'?'同步日志':'账号与同步';
+$('pageSub').textContent=v==='contacts'?'浏览分类、搜索号码、维护联系人':v==='logs'?'查看设备同步请求、写回结果与失败原因':'管理 CardDAV 登录账号与设备同步方式';
 if(v==='accounts')loadAccounts();
+if(v==='logs')loadLogs();
 }
 function openAccounts(){setView('accounts')}
 function closeAccounts(){setView('contacts')}
+function openLogs(){setView('logs')}
 
 /* 抽屉 */
 function openDrawer(){$('drawer').classList.add('on');$('scrim').classList.add('on');document.body.classList.add('locked')}
@@ -518,6 +612,50 @@ if($('accOriginal').value===name)resetAccForm();
 await loadAccounts();await loadVersion();
 }catch(e){notify('删除失败：'+e.message,false)}
 }
+
+/* 同步日志 */
+function logTime(s){const d=new Date(s);return isNaN(d.getTime())?String(s||''):d.toLocaleString('zh-CN',{hour12:false,month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'})}
+function logClass(l){return l.status===412?'conflict':l.status>=400?'bad':'ok'}
+function logLabel(l){if(l.status===412)return '冲突 412';if(l.status>=400)return '失败 '+l.status;if(l.status===204)return '写入成功';if(l.status===201)return '新建成功';return '成功 '+l.status}
+function logDetailObj(raw){try{const v=JSON.parse(raw||'{}');return v&&typeof v==='object'?v:{raw:String(raw||'')}}catch{return {raw:String(raw||'')}}}
+function logSummary(l){
+const d=logDetailObj(l.detail);
+if(d.error)return '<span class="err">'+esc(d.error)+'</span>';
+if((d.changes||[]).length){const names=d.changes.slice(0,3).map(c=>fieldName(String(c.field||'').replace(/#\\d+$/,'').replace(/^\\+/,''))).join('、');return '写回 '+esc(l.uid||'联系人')+' · '+d.changes.length+' 个字段（'+esc(names)+'）'}
+if(l.method==='PUT'||l.method==='DELETE')return esc(d.action||l.method)+' · '+esc(d.uid||'');
+return esc(l.path||'');
+}
+function toggleLogDetail(id){OPENLOG=OPENLOG===String(id)?'':String(id);renderLogs()}
+function renderLogs(){
+const q=($('logQ').value||'').trim().toLowerCase();
+const list=LOGS.filter(l=>{
+if(LOGFILTER==='write'&&l.method!=='PUT'&&l.method!=='DELETE')return false;
+if(LOGFILTER==='fail'&&l.status<400)return false;
+if(!q)return true;
+return [l.username,l.uid,l.path,l.detail,l.method,String(l.status)].join(' ').toLowerCase().includes(q);
+});
+$('logOk').textContent=LOGS.filter(l=>l.status<400).length;
+$('logFail').textContent=LOGS.filter(l=>l.status>=400&&l.status!==412).length;
+$('logConflict').textContent=LOGS.filter(l=>l.status===412).length;
+$('navLogN').textContent=LOGS.length;
+$('logStat').textContent='显示 '+list.length+' / '+LOGS.length+' 条记录';
+$('logList').innerHTML=list.map(l=>{
+const cls=logClass(l),open=OPENLOG===String(l.id);
+return '<div class="log-row '+cls+'">'+
+'<span class="log-time">'+esc(logTime(l.created_at))+'<small>'+Number(l.duration_ms||0)+'ms</small></span>'+
+'<span class="log-method">'+esc(l.method)+'</span>'+
+'<span class="log-user">'+esc(l.username||'—')+'<small>'+esc(l.platform||'')+'</small></span>'+
+'<span><span class="log-status '+cls+'">'+esc(logLabel(l))+'</span></span>'+
+'<span class="log-body">'+logSummary(l)+'</span>'+
+'<span><button type="button" class="log-more" onclick="toggleLogDetail('+Number(l.id||0)+')">'+(open?'收起':'详情')+'</button></span>'+
+(open?'<div class="log-detail">'+esc(JSON.stringify(logDetailObj(l.detail),null,2))+'</div>':'')+
+'</div>';
+}).join('')||'<div class="log-empty"><b>暂无日志记录</b><p>手机同步一次，或在这里调整筛选条件</p></div>';
+}
+async function loadLogs(){try{const d=await api('/admin/api/logs?limit=300');LOGS=d.logs||[];renderLogs()}catch(e){notify('加载日志失败：'+e.message,false)}}
+function setLogFilter(v){LOGFILTER=v;document.querySelectorAll('.log-tab').forEach(b=>b.classList.toggle('on',b.getAttribute('data-log')===v));renderLogs()}
+async function clearLogs(){if(!confirm('确定清空全部同步日志？此操作不可恢复。'))return;try{await api('/admin/api/logs',{method:'DELETE'});OPENLOG='';await loadLogs();notify('日志已清空')}catch(e){notify('清空失败：'+e.message,false)}}
+setInterval(()=>{if(VIEW==='logs'&&!$('drawer').classList.contains('on'))loadLogs()},30000);
 
 /* 数据加载 */
 async function loadVersion(){

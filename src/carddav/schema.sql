@@ -50,3 +50,20 @@ CREATE TABLE IF NOT EXISTS dav_accounts (
   platform TEXT NOT NULL DEFAULT 'ios',
   created_at TEXT NOT NULL
 );
+
+-- CardDAV 同步日志：记录每次客户端请求的账号、路径、状态与字段变化
+CREATE TABLE IF NOT EXISTS sync_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  method TEXT NOT NULL,
+  path TEXT NOT NULL,
+  username TEXT NOT NULL DEFAULT '',
+  platform TEXT NOT NULL DEFAULT '',
+  status INTEGER NOT NULL,
+  result TEXT NOT NULL,
+  uid TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT '',
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  user_agent TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_sync_logs_time ON sync_logs(created_at DESC);

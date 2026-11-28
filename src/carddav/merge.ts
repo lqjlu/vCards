@@ -101,6 +101,27 @@ export const mergeVCard = (base: string, overrides: FieldOverride[]): string => 
   const baseKeys = new Set<string>();
   const baseValues = new Map<string, Set<string>>();
 
+  // 历史自愈：旧版本可能把所有 TEL 都写成 null，导致黄页电话全空。
+  // 若没有任何存活的电话字段，就当作这次删除无效，保留基线号码。
+  const telKeys = new Set<string>();
+  const telCounters = new Map<string, number>();
+  for (const line of logical) {
+    const colon = line.indexOf(":");
+    if (colon < 0) continue;
+    const baseKey = line.slice(0, colon);
+    if (HIDDEN_FIELDS.has(fieldName(baseKey))) continue;
+    const i = telCounters.get(baseKey) ?? 0;
+    telCounters.set(baseKey, i + 1);
+    if (fieldName(baseKey) === "TEL") telKeys.add(`${baseKey}#${i}`);
+  }
+  const hasLiveTel = overrides.some((o) => {
+    if (!o.value) return false;
+    const key = o.key.replace(/^\+/, "").replace(/#\d+$/, "").replace(/~\d+$/, "");
+    return telKeys.has(o.key) || fieldName(key) === "TEL";
+  });
+  const allTelsDeleted =
+    telKeys.size > 0 && !hasLiveTel && [...telKeys].every((key) => overrideMap.get(key) === null);
+
   for (let i = 0; i < logical.length; i++) {
     const line = logical[i]!;
     const colon = line.indexOf(":");
@@ -126,8 +147,12 @@ export const mergeVCard = (base: string, overrides: FieldOverride[]): string => 
 
     if (overrideMap.has(key)) {
       const override = overrideMap.get(key)!;
-      if (override === null) continue; // 用户删除
-      output.push(`${baseKey}:${override}`);
+      if (override === null) {
+        if (name === "TEL" && allTelsDeleted) output.push(raw[i] ?? line);
+        continue; // 用户删除
+      }
+      // 空字符串视为“没有值”，保留基线，避免客户端提交空 TEL 时把号码抹掉
+      output.push(override === "" ? (raw[i] ?? line) : `${baseKey}:${override}`);
     } else {
       output.push(raw[i] ?? line);
     }
@@ -135,7 +160,7 @@ export const mergeVCard = (base: string, overrides: FieldOverride[]): string => 
 
   const additions: FieldOverride[] = [];
   for (const o of overrides) {
-    if (o.value === null) continue;
+    if (o.value === null || o.value === "") continue;
     if (o.key.startsWith("+")) {
       additions.push(o);
       continue;

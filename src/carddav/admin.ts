@@ -13,6 +13,7 @@ import {
   loadUserState,
   type AccountPlatform,
 } from "./store";
+import { clearSyncLogs, listSyncLogs } from "./sync-log";
 import type { Env } from "./worker-types";
 import type { BookData, Catalog } from "./types";
 
@@ -61,12 +62,13 @@ const buildAdminFields = (
     key: f.key,
     // 去掉 item1. 分组前缀，否则前端 ^TEL 判断不到，列表里会显示“没有号码”
     label: stripGroup(f.baseKey),
-    value: overrideMap.has(f.key) ? (overrideMap.get(f.key) ?? "") : f.value,
-    edited: overrideMap.has(f.key),
+    // 空覆盖视为无效，继续显示基线值，避免后台出现“电话是空的”
+    value: overrideMap.has(f.key) ? (overrideMap.get(f.key) || f.value) : f.value,
+    edited: overrideMap.has(f.key) && Boolean(overrideMap.get(f.key)),
   }));
 
   for (const o of overrides) {
-    if (o.value === null) continue;
+    if (o.value === null || o.value === "") continue;
     if (o.key.startsWith("+")) {
       fields.push({
         key: o.key,
@@ -158,7 +160,7 @@ const saveContact = async (request: Request, env: Env): Promise<Response> => {
   batch.push(db.prepare("DELETE FROM overrides WHERE uid = ?").bind(uid));
   const now = new Date().toISOString();
   for (const field of body.fields ?? []) {
-    if (!field.key) continue;
+    if (!field.key || !field.value) continue; // 空值不写覆盖，保留基线号码
     batch.push(
       db
         .prepare(
@@ -367,8 +369,26 @@ const deleteAccount = async (request: Request, env: Env): Promise<Response> => {
   return json({ ok: true, version });
 };
 
-export const handleAdminApi = async (request: Request, env: Env, path: string): Promise<Response> => {
+/** 同步日志：GET 列表，DELETE 清空 */
+const syncLogs = async (request: Request, env: Env): Promise<Response> => {
   const method = request.method.toUpperCase();
+  if (method === "DELETE") {
+    if (!env.DB) return json({ error: "D1 未绑定" }, 500);
+    await clearSyncLogs(env.DB);
+    return json({ ok: true });
+  }
+  if (!env.DB) return json({ logs: [], total: 0 });
+  const url = new URL(request.url);
+  const logs = await listSyncLogs(env.DB, Number(url.searchParams.get("limit") ?? 200));
+  return json({ logs, total: logs.length });
+};
+
+export const handleAdminApi = async (request: Request, env: Env, pathWithQuery: string): Promise<Response> => {
+  const path = pathWithQuery.split("?")[0] ?? pathWithQuery;
+  const method = request.method.toUpperCase();
+  if (path === "/admin/api/logs" && (method === "GET" || method === "DELETE")) {
+    return syncLogs(request, env);
+  }
   if (path === "/admin/api/contacts" && method === "GET") return listContacts(env);
   if (path === "/admin/api/contacts" && method === "POST") return createContact(request, env);
   if (path === "/admin/api/contact" && method === "POST") return saveContact(request, env);

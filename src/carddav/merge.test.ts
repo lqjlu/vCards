@@ -132,6 +132,24 @@ describe("mergeVCard", () => {
     expect(merged).toContain("item2.PHOTO;ENCODING=b;TYPE=PNG:iVBORw0KGgo\n XNSR0IB2cksfwAAA");
     expect(merged.indexOf("item2.PHOTO")).toBeLessThan(merged.indexOf("END:VCARD"));
   });
+
+  test("历史数据把所有电话都标记删除时自动恢复基线号码", () => {
+    const merged = mergeVCard(BASE, [
+      { key: "TEL;TYPE=CELL#0", value: null },
+      { key: "TEL;TYPE=CELL#1", value: null },
+    ]);
+    expect(merged).toContain("TEL;TYPE=CELL:13800000000");
+    expect(merged).toContain("TEL;TYPE=CELL:13900000000");
+  });
+
+  test("空字符串覆盖不会把基线电话抹掉", () => {
+    const merged = mergeVCard(BASE, [
+      { key: "TEL;TYPE=CELL#0", value: "" },
+      { key: "+TEL;TYPE=CELL", value: "" },
+    ]);
+    expect(merged).toContain("TEL;TYPE=CELL:13800000000");
+    expect(merged).not.toContain("TEL;TYPE=CELL:\r\n");
+  });
 });
 
 describe("buildVCard", () => {
