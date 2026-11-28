@@ -102,6 +102,16 @@ jobs:
                 printf 'deployed %s: %s\n' "$k" "$(grep -c "$k" /tmp/deployed.js || true)"
               done
             } || echo "script download unavailable"
+          echo "--- zone workers routes ---"
+          ZONE=$(curl -fsS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            "https://api.cloudflare.com/client/v4/zones?name=585119.xyz" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print((d.get('result') or [{}])[0].get('id',''))" 2>/dev/null || true)
+          echo "zone=$ZONE"
+          if [ -n "$ZONE" ]; then
+            curl -fsS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              "https://api.cloudflare.com/client/v4/zones/$ZONE/workers/routes" \
+              | python3 -c "import sys,json; d=json.load(sys.stdin); [print('route:',r.get('pattern'),'->',r.get('script')) for r in (d.get('result') or [])]" 2>/dev/null || true
+          fi
           echo "--- live check ---"
           for i in 1 2 3; do
             code=$(curl -s -o /tmp/live-admin.html -w "%{http_code}" -m 20 -u "${ADMIN_USER}:${ADMIN_PASS}" https://card.585119.xyz/admin || true)
