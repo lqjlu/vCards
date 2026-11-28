@@ -40,21 +40,16 @@ jobs:
       - name: Build static CardDAV data
         run: bun run build:carddav
 
-      # 不再在 CI 里写 CARDDAV_PASS secret：
-      # wrangler secret put 会额外触发一次异步的 "Secret Change" 部署，
-      # 它用旧脚本覆盖紧随其后的 deploy，导致线上一直跑旧代码。
-      # CardDAV / 管理员密码统一在 Cloudflare Workers 控制台手动维护。
-      - name: Preflight bundled worker
+      # 后台管理页登录凭据，来自 GitHub Actions Secrets (ADMIN_USER / ADMIN_PASS)。
+      - name: Configure admin credentials
         run: |
-          npx wrangler deploy --dry-run --outdir /tmp/worker-bundle >/dev/null 2>&1
-          echo "bundle bytes: $(wc -c < /tmp/worker-bundle/worker.js)"
-          for k in "navLogN" "loadLogs" "viewLogs" "admin/api/logs"; do
-            printf 'bundle %s: %s\n' "$k" "$(grep -c "$k" /tmp/worker-bundle/worker.js || true)"
-          done
-          echo "source admin-ui bytes: $(wc -c < src/carddav/admin-ui.ts)"
-          for k in "navLogN" "loadLogs" "admin/api/logs"; do
-            printf 'source %s: %s\n' "$k" "$(grep -c "$k" src/carddav/admin-ui.ts || true)"
-          done
+          printf '%s' "$ADMIN_USER" | npx wrangler secret put ADMIN_USER
+          printf '%s' "$ADMIN_PASS" | npx wrangler secret put ADMIN_PASS
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          ADMIN_USER: ${{ secrets.ADMIN_USER }}
+          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
 
       - name: Deploy Worker
         id: deploy
@@ -67,80 +62,36 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-      # 强制把刚上传的版本切到 100% 流量，避免渐进式部署/Secret Change 把旧版本留在路由上
-      - name: Promote new version to 100%
-        if: steps.deploy.outputs.version != ''
+      - name: Ensure domain route points to this Worker
         run: |
-          echo "Promoting ${{ steps.deploy.outputs.version }} to 100%"
-          npx wrangler versions deploy "${{ steps.deploy.outputs.version }}@100%" -y || true
+          ZONE=$(curl -fsS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            "https://api.cloudflare.com/client/v4/zones?name=585119.xyz" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print((d.get('result') or [{}])[0].get('id',''))")
+          echo "zone=$ZONE"
+          ROUTES=$(curl -fsS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            "https://api.cloudflare.com/client/v4/zones/$ZONE/workers/routes")
+          echo "$ROUTES" | python3 -c "import sys,json; d=json.load(sys.stdin); [print('route:',r.get('pattern'),'->',r.get('script')) for r in (d.get('result') or [])]"
+          STALE=$(echo "$ROUTES" | python3 -c "import sys,json; d=json.load(sys.stdin); print(' '.join(r.get('id','') for r in (d.get('result') or []) if r.get('pattern','').startswith('card.585119.xyz') and r.get('script')!='vcards-carddav'))")
+          for id in $STALE; do
+            echo "Repointing route $id -> vcards-carddav"
+            curl -fsS -X PUT -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d '{"pattern":"card.585119.xyz/*","script":"vcards-carddav"}' \
+              "https://api.cloudflare.com/client/v4/zones/$ZONE/workers/routes/$id"
+          done
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-      - name: Verify deployed Worker
+      - name: Verify live service
         run: |
-          echo "--- wrangler deployments ---"
-          npx wrangler deployments list || true
-          echo "--- deployments JSON (rollout state) ---"
-          npx wrangler deployments list --json > /tmp/deployments.json 2>/dev/null || true
-          if [ -s /tmp/deployments.json ]; then
-            python3 -c "import json; d=json.load(open('/tmp/deployments.json')); print(json.dumps(d,ensure_ascii=False)[:800])" 2>/dev/null || head -c 800 /tmp/deployments.json
-          fi
-          echo "--- script upload metadata ---"
-          API="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/vcards-carddav"
-          curl -fsS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" "$API" \
-            | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('result',{}); print('modified_on:',r.get('modified_on')); print('deployment_trigger:',r.get('deployment_trigger')); print('usage_model:',r.get('usage_model'))" 2>/dev/null || true
-          echo "--- active versions (deployments API) ---"
-          curl -fsS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/deployments/by-script/vcards-carddav" \
-            | python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps(d.get('result',{}),ensure_ascii=False)[:1200])" 2>/dev/null || echo "deployments API unavailable"
-          echo "--- downloaded deployed script ---"
-          curl -fsS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H "Accept: application/javascript" \
-            "$API/content" -o /tmp/deployed.js 2>/dev/null && {
-              echo "deployed bytes: $(wc -c < /tmp/deployed.js)"
-              for k in "navLogN" "loadLogs" "admin/api/logs"; do
-                printf 'deployed %s: %s\n' "$k" "$(grep -c "$k" /tmp/deployed.js || true)"
-              done
-            } || echo "script download unavailable"
-          echo "--- reconcile domain route ---"
-          ZONE=$(curl -fsS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-            "https://api.cloudflare.com/client/v4/zones?name=585119.xyz" \
-            | python3 -c "import sys,json; d=json.load(sys.stdin); print((d.get('result') or [{}])[0].get('id',''))" 2>/dev/null || true)
-          echo "zone=$ZONE"
-          if [ -n "$ZONE" ]; then
-            ROUTES=$(curl -fsS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-              "https://api.cloudflare.com/client/v4/zones/$ZONE/workers/routes" 2>/dev/null || echo '{}')
-            echo "$ROUTES" | python3 -c "import sys,json; d=json.load(sys.stdin); [print('route:',r.get('pattern'),'->',r.get('script'),'id:',r.get('id')) for r in (d.get('result') or [])]" 2>/dev/null || true
-            # card.585119.xyz/* 曾指向旧 worker vcards，导致线上一直跑旧代码。
-            # 把该路由改指向 vcards-carddav（本项目 Worker），与 wrangler.toml 一致。
-            STALE=$(echo "$ROUTES" | python3 -c "import sys,json; d=json.load(sys.stdin); print(' '.join(r.get('id','') for r in (d.get('result') or []) if r.get('pattern','').startswith('card.585119.xyz') and r.get('script')!='vcards-carddav'))" 2>/dev/null || true)
-            for id in $STALE; do
-              echo "Repointing route $id to vcards-carddav"
-              curl -fsS -X PUT -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-                -H "Content-Type: application/json" \
-                -d '{"pattern":"card.585119.xyz/*","script":"vcards-carddav"}' \
-                "https://api.cloudflare.com/client/v4/zones/$ZONE/workers/routes/$id" >/dev/null 2>&1 || echo "route update failed" || true
-            done
-          fi
-          echo "--- worker settings comparison ---"
-          for W in vcards vcards-carddav; do
-            echo "[$W]"
-            curl -fsS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-              "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/$W/settings" \
-              | python3 -c "import sys,json; d=json.load(sys.stdin); [print(b.get('name'),b.get('type'),b.get('text') or b.get('namespace_id') or b.get('bucket_name') or '') for b in (d.get('result') or {}).get('bindings',[])]" 2>/dev/null || echo "settings unavailable"
-          done
-          echo "--- live check ---"
           for i in 1 2 3; do
-            code=$(curl -s -o /tmp/live-admin.html -w "%{http_code}" -m 20 -u "${ADMIN_USER}:${ADMIN_PASS}" https://card.585119.xyz/admin || true)
-            size=$(wc -c < /tmp/live-admin.html 2>/dev/null || echo 0)
-            hits=$(grep -c "同步日志" /tmp/live-admin.html 2>/dev/null || true)
-            echo "try$i http=$code size=$size syncLogHits=$hits"
-            if [ "$hits" -gt 0 ]; then break; fi
+            code=$(curl -s -o /dev/null -w "%{http_code}" -m 20 -u "${ADMIN_USER}:${ADMIN_PASS}" https://card.585119.xyz/admin/api/logs || true)
+            echo "try$i logs api http=$code"
+            if [ "$code" = "200" ]; then break; fi
             sleep 5
           done
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           ADMIN_USER: ${{ secrets.ADMIN_USER }}
           ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
 
@@ -155,5 +106,5 @@ jobs:
         run: |
           echo "### CardDAV 部署完成" >> $GITHUB_STEP_SUMMARY
           echo "- 联系人数量: $(node -e "const c=require('./dist/carddav/catalog.json');console.log(c.books.reduce((n,b)=>n+b.contacts.length,0))")" >> $GITHUB_STEP_SUMMARY
-          echo "- 分类数量: $(node -e "const c=require('./dist/carddav/catalog.json');console.log(c.books.length)")" >> $GITHUB_STEP_SUMMARY
+          echo "- 分类数量: $(node -e "const c=require('./dist/carddav/catalog.json').books.length")" >> $GITHUB_STEP_SUMMARY
           echo "- 构建时间: $(node -e "console.log(require('./dist/carddav/catalog.json').generatedAt)")" >> $GITHUB_STEP_SUMMARY
